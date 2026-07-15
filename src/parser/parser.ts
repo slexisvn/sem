@@ -29,6 +29,7 @@ import {
   UnaryExpr
 } from "../ast/nodes.js";
 import { TRANSFORM_NAMES } from "../config/constants.js";
+import { DISTINCT_KEYWORD } from "../config/aggregates.js";
 import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span, Token, TokKind } from "../lexer/token.js";
 import { tokenize } from "../lexer/lexer.js";
@@ -331,8 +332,7 @@ export class Parser {
     const nameTok = this.expect(TokKind.Ident, "a dimension name");
     this.expect(TokKind.Colon, "':'");
     const typeTok = this.expect(TokKind.Ident, "a dimension type");
-    this.expect(TokKind.Eq, "'='");
-    const expr = this.parseExpr(0);
+    const expr = this.at(TokKind.Eq) ? this.parseDimensionExpr() : this.identColumn(nameTok);
     return {
       kind: NodeKind.Dimension,
       name: nameTok.text,
@@ -342,6 +342,15 @@ export class Parser {
       expr,
       span: this.spanFrom(start)
     };
+  }
+
+  private parseDimensionExpr(): Expr {
+    this.expect(TokKind.Eq, "'='");
+    return this.parseExpr(0);
+  }
+
+  private identColumn(nameTok: Token): IdentExpr {
+    return { kind: NodeKind.Ident, name: nameTok.text, span: nameTok.span };
   }
 
   private parseMeasure(): MeasureDecl {
@@ -522,9 +531,8 @@ export class Parser {
     this.expect(TokKind.Materialize, "'materialize'");
     const nameTok = this.expect(TokKind.Ident, "a materialized view name");
     this.expect(TokKind.As, "'as'");
-    // The embedded query owns the rest of the declaration: materialize name as show ...
     const show = this.expect(TokKind.Show, "'show'");
-    const query = this.parseQueryAfterShow(show.span, true);
+    const query = this.parseQueryAfterShow(show.span, false);
     return {
       kind: NodeKind.Materialize,
       name: nameTok.text,
@@ -711,6 +719,7 @@ export class Parser {
 
   private finishCall(callee: IdentExpr): CallExpr {
     this.expect(TokKind.LParen, "'('");
+    const distinct = this.consumeDistinct();
     const args: Expr[] = [];
     if (!this.at(TokKind.RParen)) {
       args.push(this.parseExpr(0));
@@ -725,8 +734,18 @@ export class Parser {
       callee: callee.name,
       calleeSpan: callee.span,
       args,
+      distinct,
       span: { start: callee.span.start, end: close.span.end }
     };
+  }
+
+  private consumeDistinct(): boolean {
+    const token = this.peek();
+    if (token.kind !== TokKind.Ident || token.text !== DISTINCT_KEYWORD) return false;
+    const following = this.peek(1).kind;
+    if (following === TokKind.RParen || following === TokKind.Comma) return false;
+    this.next();
+    return true;
   }
 
   private literal(value: string | number | boolean, literalType: LiteralExpr["literalType"], span: Span): LiteralExpr {

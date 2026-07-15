@@ -71,4 +71,21 @@ describe("parser", () => {
   test("reports a parse error with position", () => {
     expect(() => parseQuery("show revenue by")).toThrowError(/parse-error/);
   });
+
+  test("a dimension without '= expr' defaults to the column of the same name", () => {
+    const [model] = parseModels("model M { table t primary_key id dimension region: string }");
+    const dim = model!.dimensions[0]!;
+    expect(dim.name).toBe("region");
+    expect(dim.expr.kind).toBe(NodeKind.Ident);
+    if (dim.expr.kind === NodeKind.Ident) expect(dim.expr.name).toBe("region");
+  });
+
+  test("the shorthand maps to the same column as the explicit self-mapping", () => {
+    const shorthand = parseModels("model M { table t primary_key id dimension region: string }")[0]!.dimensions[0]!.expr;
+    const explicit = parseModels("model M { table t primary_key id dimension region: string = region }")[0]!.dimensions[0]!.expr;
+    expect(shorthand.kind).toBe(explicit.kind);
+    if (shorthand.kind === NodeKind.Ident && explicit.kind === NodeKind.Ident) {
+      expect(shorthand.name).toBe(explicit.name);
+    }
+  });
 });

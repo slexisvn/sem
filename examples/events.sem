@@ -1,0 +1,57 @@
+# Product analytics: event stream rolled up into product metrics.
+
+model Events {
+  table analytics.events
+  primary_key id
+
+  join Sessions on session_id = Sessions.id (many_to_one)
+  join Users on user_id = Users.id (many_to_one)
+
+  dimension name: string
+  dimension platform: string
+  dimension occurred_at: time
+
+  measure event_count   = count(id)
+  measure user_count    = count(distinct user_id)
+  measure session_count = count(distinct session_id)
+
+  metric events           = event_count
+  metric active_users     = user_count
+  metric sessions         = session_count
+  metric events_per_user  = events / active_users
+  metric signups          = event_count where name = 'signup'
+}
+
+model Sessions {
+  table analytics.sessions
+  primary_key id
+
+  join Users on user_id = Users.id (many_to_one)
+
+  dimension channel: string
+
+  measure duration_avg = avg(duration_seconds)
+  metric  avg_session_seconds = duration_avg
+}
+
+model Users {
+  table analytics.users
+  primary_key id
+
+  dimension country: string
+  dimension plan: string
+}
+
+materialize daily_active_users as
+  show active_users by occurred_at.day
+
+materialize weekly_events as
+  show events, events.rolling(7d), events.cumulative by occurred_at.day
+
+assert active_users where occurred_at.month = '2026-06' between 1000 and 50000
+
+# Sample queries:
+#   show events, active_users, events_per_user by platform
+#   show active_users by Users.country                 # distinct users per country
+#   show signups by occurred_at.week                   # filtered event count
+#   show avg_session_seconds by channel                # non-additive avg stays a plain metric

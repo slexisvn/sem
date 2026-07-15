@@ -1,13 +1,11 @@
 import { TimeGrain } from "../config/constants.js";
-import { SqlDialect } from "./dialect.js";
+import { BaseDialect } from "./dialect.js";
 
-const SIMPLE_IDENT = /^[a-z_][a-z0-9_]*$/;
-
-export class BigQueryDialect implements SqlDialect {
+export class BigQueryDialect extends BaseDialect {
   public readonly name = "bigquery";
 
-  public ident(name: string): string {
-    return SIMPLE_IDENT.test(name) ? name : `\`${name.replace(/`/g, "")}\``;
+  protected quote(name: string): string {
+    return `\`${name.replace(/`/g, "")}\``;
   }
 
   public paramPlaceholder(_index1: number): string {
@@ -18,8 +16,8 @@ export class BigQueryDialect implements SqlDialect {
     return `DATE_TRUNC(${expr}, ${grain.toUpperCase()})`;
   }
 
-  public limit(n: number): string {
-    return `LIMIT ${n}`;
+  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {
+    return `UNNEST(GENERATE_DATE_ARRAY(${startExpr}, ${endExpr}, INTERVAL 1 ${grain.toUpperCase()})) AS ${this.ident(columnAlias)}`;
   }
 }
 

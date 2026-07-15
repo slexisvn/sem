@@ -1,13 +1,11 @@
 import { TimeGrain } from "../config/constants.js";
-import { SqlDialect } from "./dialect.js";
+import { BaseDialect } from "./dialect.js";
 
-const SIMPLE_IDENT = /^[a-z_][a-z0-9_]*$/;
-
-export class MySqlDialect implements SqlDialect {
+export class MySqlDialect extends BaseDialect {
   public readonly name = "mysql";
 
-  public ident(name: string): string {
-    return SIMPLE_IDENT.test(name) ? name : `\`${name.replace(/`/g, "``")}\``;
+  protected quote(name: string): string {
+    return `\`${name.replace(/`/g, "``")}\``;
   }
 
   public paramPlaceholder(_index1: number): string {
@@ -19,7 +17,6 @@ export class MySqlDialect implements SqlDialect {
       case TimeGrain.Day:
         return `DATE(${expr})`;
       case TimeGrain.Week:
-        // ISO week start; keeps week grouping stable across year boundaries.
         return `STR_TO_DATE(CONCAT(YEARWEEK(${expr}, 3), ' Monday'), '%X%V %W')`;
       case TimeGrain.Month:
         return `DATE_FORMAT(${expr}, '%Y-%m-01')`;
@@ -28,10 +25,6 @@ export class MySqlDialect implements SqlDialect {
       case TimeGrain.Year:
         return `DATE_FORMAT(${expr}, '%Y-01-01')`;
     }
-  }
-
-  public limit(n: number): string {
-    return `LIMIT ${n}`;
   }
 }
 

@@ -1,0 +1,54 @@
+# SaaS billing: recurring revenue and account metrics.
+
+model Subscriptions {
+  table billing.subscriptions
+  primary_key id
+
+  join Plans on plan_id = Plans.id (many_to_one)
+  join Accounts on account_id = Accounts.id (many_to_one)
+
+  dimension status: string
+  dimension country: string
+  dimension started_at: time
+
+  measure mrr_sum       = sum(mrr)
+  measure sub_count     = count(id)
+  measure account_count = count(distinct account_id)
+  measure mrr_max       = max(mrr)
+
+  metric mrr         = mrr_sum where status = 'active'
+  metric active_subs = sub_count where status = 'active'
+  metric accounts    = account_count
+  metric arpa        = mrr / accounts
+  metric largest_mrr = mrr_max
+}
+
+model Plans {
+  table billing.plans
+  primary_key id
+
+  dimension name: string
+  dimension tier: string
+}
+
+model Accounts {
+  table billing.accounts
+  primary_key id
+
+  dimension industry: string
+  dimension region: string
+}
+
+policy emea_only on Subscriptions restrict country in ('DE', 'FR', 'NL', 'ES')
+
+materialize mrr_trend as
+  show mrr, mrr.mom, mrr.cumulative by started_at.month
+
+assert mrr where started_at.month = '2026-01' == 480000
+assert arpa where region = 'EMEA' between 50 and 5000
+
+# Sample queries:
+#   show mrr, active_subs, arpa by Plans.tier
+#   show accounts by Accounts.industry                 # distinct accounts per industry
+#   show mrr.share by country                          # each country's share of MRR
+#   show largest_mrr by Plans.name                     # max survives the plan fan-out unchanged

@@ -17,13 +17,18 @@ with suggestions:
 - type mismatches — a time grain on a string dimension, comparing incompatible types
 - unreachable or ambiguous join paths
 - duplicate names, unknown aggregates, bad cardinalities
+- role violations — a `measure` that isn't a single aggregate over its own columns, or a
+  `metric` that calls an aggregate directly instead of building on a measure
+- non-additive transforms — e.g. a rolling window or `share` over an average or a ratio
 
 ### Compile a query to SQL
 
 Run **Sem: Compile Query to SQL**. Type a query (or select one in the editor) and the extension
 compiles it against the models in the current file, opening the generated SQL beside your model —
-filtered metrics as `CASE WHEN`, ratios wrapped in `NULLIF`, fan-out-safe CTEs, and time grains as
-`DATE_TRUNC`. Bind parameters are listed in a header comment; values are never interpolated.
+filtered metrics as `CASE WHEN`, ratios wrapped in `NULLIF`, fan-out-safe aggregation that
+deduplicates on the primary key, distinct counts, window transforms densified over a date spine, and
+time grains as `DATE_TRUNC`. Bind parameters are listed in a header comment; values are never
+interpolated.
 
 ```sem
 show revenue, aov by region where region = 'VN' order by revenue desc top 5
@@ -43,13 +48,13 @@ measures, and metric formulas — as a Markdown document.
 
 ### Syntax highlighting
 
-Keywords, aggregates, metric transforms (`.mom`, `.rolling(30d)`, `.share`), join cardinalities,
-string literals, durations, and comments.
+Keywords, aggregates, the `distinct` modifier, metric transforms (`.mom`, `.rolling(30d)`, `.share`),
+join cardinalities, string literals, durations, and comments.
 
 ## Getting started
 
 1. Install the extension.
-2. Open or create a `.sem` file (see `examples/orders.sem` in the Sem repository).
+2. Open or create a `.sem` file
 3. Start typing — diagnostics, hover, and completion are active immediately.
 4. Open the Command Palette and run **Sem: Compile Query to SQL**.
 
@@ -70,12 +75,16 @@ model Orders {
   primary_key id
   join Customers on customer_id = Customers.id (many_to_one)
 
-  dimension region: string = region
-  dimension ordered_at: time = ordered_at
+  dimension region: string        # shorthand for `= region`
+  dimension ordered_at: time      # a time dimension for grains like ordered_at.month
 
-  metric revenue = sum(amount) where status = 'paid'   # filtered
-  metric orders  = count(id)                           # aggregate
-  metric aov     = revenue / orders                    # ratio → NULLIF
+  measure gross       = sum(amount)              # primitive aggregate
+  measure order_count = count(id)
+  measure buyers      = count(distinct customer_id)
+
+  metric revenue = gross where status = 'paid'   # simple metric: measure + filter
+  metric orders  = order_count                   # simple metric
+  metric aov     = revenue / orders              # ratio metric → NULLIF
 }
 
 policy analyst_vn on Orders restrict region = 'VN'

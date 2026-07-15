@@ -14,6 +14,8 @@ export enum DiagCode {
   TypeMismatch = "type-mismatch",
   UnreachableJoin = "unreachable-join",
   AmbiguousJoin = "ambiguous-join",
+  NonAdditive = "non-additive",
+  InvalidDefinition = "invalid-definition",
   Unsupported = "unsupported"
 }
 

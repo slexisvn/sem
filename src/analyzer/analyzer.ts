@@ -28,6 +28,7 @@ import {
   TransformKind,
   TRANSFORM_NAMES
 } from "../config/constants.js";
+import { aggAllowsDistinct, ReAgg } from "../config/aggregates.js";
 import { closestName, DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
 import { Catalog, DimInfo, JoinInfo, ModelInfo } from "./catalog.js";
@@ -42,6 +43,7 @@ import {
   MExpr,
   modelSet,
   Plan,
+  reAggOfExpr,
   SelectMetric,
   TransformIR,
   ValueRef
@@ -81,7 +83,10 @@ const CMP_OPS: ReadonlyMap<BinaryOp, CmpOp> = new Map([
   [">=", CmpOp.Gte]
 ]);
 
+type DeclKind = "measure" | "metric";
+
 interface Located {
+  readonly kind: DeclKind;
   readonly model: string;
   readonly name: string;
   readonly expr: Expr;
@@ -125,6 +130,7 @@ export class Analyzer {
 
     const dims = query.dimensions.map((ref) => this.resolveDimension(facts, ref));
     const selects = working.map((w) => this.finishSelect(w, dims, strategy));
+    const fannedOut = facts.some((fact) => fact.fannedOut === true);
 
     for (const fact of facts) {
       fact.filter = this.buildFilter(fact, query.where, options);
@@ -132,10 +138,10 @@ export class Analyzer {
 
     let having: MetricCond | undefined;
     if (query.having !== undefined) {
-      if (strategy === "multi" || windowed) {
+      if (strategy === "multi" || windowed || fannedOut) {
         throw new SemError(
           DiagCode.Unsupported,
-          "'having' is only supported for a single-fact, non-windowed query in phase 1",
+          "'having' is only supported for a single-fact, non-windowed query without a fan-out dimension",
           query.span
         );
       }
@@ -200,25 +206,53 @@ export class Analyzer {
         w.raw.span
       );
     }
-    const transform = this.buildTransform(w.raw, dims);
+    const transform = this.buildTransform(w.raw, dims, w.expr);
     return { name: w.name, baseName: w.baseName, expr: w.expr, transform };
   }
 
-  private buildTransform(call: TransformCall, dims: DimPlan[]): TransformIR {
+  private buildTransform(call: TransformCall, dims: DimPlan[], base: MExpr): TransformIR {
     const kind = call.name as TransformKind;
     switch (kind) {
       case TransformKind.Mom:
-        return { kind, lag: 1, orderDim: this.orderDim(dims, call) };
+        return { kind, lag: 1, orderDim: this.orderDim(dims, call), partition: this.seriesPartition(dims, call) };
       case TransformKind.Yoy:
-        return { kind, lag: this.periodsPerYear(dims, call), orderDim: this.orderDim(dims, call) };
+        return { kind, lag: this.periodsPerYear(dims, call), orderDim: this.orderDim(dims, call), partition: this.seriesPartition(dims, call) };
       case TransformKind.Rolling:
-        return { kind, rows: this.rollingRows(call, dims), orderDim: this.orderDim(dims, call) };
+        return { kind, rows: this.rollingRows(call, dims), orderDim: this.orderDim(dims, call), combinator: this.windowCombinator(base, call), partition: this.seriesPartition(dims, call) };
       case TransformKind.Cumulative:
-        return { kind, orderDim: this.orderDim(dims, call) };
+        return { kind, orderDim: this.orderDim(dims, call), combinator: this.windowCombinator(base, call), partition: this.seriesPartition(dims, call) };
       case TransformKind.Share:
+        this.requireAdditive(base, call, ReAgg.Sum, "share() sums the base across a partition");
         return { kind, partition: this.sharePartition(call, dims) };
       default:
         throw new SemError(DiagCode.Unsupported, `unknown transform '${call.name}'`, call.nameSpan, closestName(call.name, TRANSFORM_NAMES));
+    }
+  }
+
+  private seriesPartition(dims: DimPlan[], call: TransformCall): string[] {
+    const order = this.orderDim(dims, call);
+    return dims.filter((dim) => dim.outputName !== order).map((dim) => dim.outputName);
+  }
+
+  private windowCombinator(base: MExpr, call: TransformCall): ReAgg {
+    const reagg = reAggOfExpr(base);
+    if (reagg === ReAgg.None) {
+      throw new SemError(
+        DiagCode.NonAdditive,
+        `transform '.${call.name}' re-aggregates its base over a window, so the base must be additive (sum, count, min, or max); this metric is not`,
+        call.span
+      );
+    }
+    return reagg;
+  }
+
+  private requireAdditive(base: MExpr, call: TransformCall, need: ReAgg, why: string): void {
+    if (reAggOfExpr(base) !== need) {
+      throw new SemError(
+        DiagCode.NonAdditive,
+        `transform '.${call.name}' is not valid here: ${why}, which requires a ${need}-additive base metric`,
+        call.span
+      );
     }
   }
 
@@ -319,9 +353,9 @@ export class Analyzer {
     if (hint !== undefined) {
       const model = this.catalog.models.get(hint);
       const metric = model?.metrics.get(name);
-      if (metric !== undefined) return { model: hint, name, expr: metric.expr, filter: metric.filter };
+      if (metric !== undefined) return { kind: "metric", model: hint, name, expr: metric.expr, filter: metric.filter };
       const measure = model?.measures.get(name);
-      if (measure !== undefined) return { model: hint, name, expr: measure.expr };
+      if (measure !== undefined) return { kind: "measure", model: hint, name, expr: measure.expr };
     }
     const metricModels = this.catalog.metricIndex.get(name);
     if (metricModels !== undefined) {
@@ -334,7 +368,7 @@ export class Analyzer {
       }
       const model = metricModels[0]!;
       const metric = this.catalog.models.get(model)!.metrics.get(name)!;
-      return { model, name, expr: metric.expr, filter: metric.filter };
+      return { kind: "metric", model, name, expr: metric.expr, filter: metric.filter };
     }
     const measureModels = this.catalog.measureIndex.get(name);
     if (measureModels !== undefined) {
@@ -347,7 +381,7 @@ export class Analyzer {
       }
       const model = measureModels[0]!;
       const measure = this.catalog.models.get(model)!.measures.get(name)!;
-      return { model, name, expr: measure.expr };
+      return { kind: "measure", model, name, expr: measure.expr };
     }
     throw new SemError(DiagCode.UnknownMetric, `unknown metric '${name}'`, span, this.suggestMetric(name));
   }
@@ -357,62 +391,124 @@ export class Analyzer {
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
     if (visiting.has(key)) {
-      throw new SemError(DiagCode.CyclicMetric, `metric '${located.name}' is defined in terms of itself`, span);
+      throw new SemError(DiagCode.CyclicMetric, `${located.kind} '${located.name}' is defined in terms of itself`, span);
     }
     visiting.add(key);
-    const result = this.expandExpr(located.model, located.expr, located.filter, visiting);
+    const body = this.expandExpr(located.model, located.expr, located.kind, visiting);
+    const result = located.filter !== undefined ? this.attachFilter(body, located.filter) : body;
     visiting.delete(key);
+    this.checkShape(located, result, span);
     this.cache.set(key, result);
     return result;
   }
 
-  private expandExpr(model: string, expr: Expr, ownFilter: Expr | undefined, visiting: Set<string>): MExpr {
+  private checkShape(located: Located, result: MExpr, span: Span): void {
+    if (located.kind === "measure") {
+      if (result.k !== "agg") {
+        throw new SemError(
+          DiagCode.InvalidDefinition,
+          `measure '${located.name}' must be a single aggregate over its own columns; compose measures in a 'metric' instead`,
+          span
+        );
+      }
+      if (result.model !== located.model) {
+        throw new SemError(
+          DiagCode.InvalidDefinition,
+          `measure '${located.name}' must aggregate its own model's columns, not '${result.model}'; define that measure on '${result.model}'`,
+          span
+        );
+      }
+    }
+    if (located.kind === "metric" && !hasAggregate(result)) {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `metric '${located.name}' must build on at least one measure`,
+        span
+      );
+    }
+  }
+
+  private attachFilter(node: MExpr, filter: Expr): MExpr {
+    switch (node.k) {
+      case "agg": {
+        const cond = this.resolveCond(filter, this.columnResolver(node.model));
+        const merged: Cond = node.filter !== undefined ? { k: "and", left: node.filter, right: cond } : cond;
+        return { ...node, filter: merged };
+      }
+      case "bin":
+        return { k: "bin", op: node.op, left: this.attachFilter(node.left, filter), right: this.attachFilter(node.right, filter) };
+      case "num":
+        return node;
+    }
+  }
+
+  private expandExpr(model: string, expr: Expr, owner: DeclKind, visiting: Set<string>): MExpr {
     switch (expr.kind) {
       case NodeKind.Literal: {
         if (expr.literalType !== "number") {
-          throw new SemError(DiagCode.TypeMismatch, "only numeric literals are allowed in a metric expression", expr.span);
+          throw new SemError(DiagCode.TypeMismatch, "only numeric literals are allowed here", expr.span);
         }
         return { k: "num", value: expr.value as number };
       }
-      case NodeKind.Call:
-        return this.expandCall(model, expr, ownFilter);
+      case NodeKind.Call: {
+        if (owner === "metric") {
+          throw new SemError(
+            DiagCode.InvalidDefinition,
+            `a metric cannot call an aggregate like '${expr.callee}' directly; define a measure and reference it`,
+            expr.calleeSpan
+          );
+        }
+        return this.expandCall(model, expr);
+      }
       case NodeKind.Ident:
+        this.requireComposable(owner, expr.name, expr.span);
         return this.expandRef(model, expr.name, expr.span, visiting);
       case NodeKind.Member: {
         if (expr.object.kind !== NodeKind.Ident || !this.catalog.hasModel(expr.object.name)) {
-          throw new SemError(DiagCode.Unsupported, `unsupported reference '${refName(expr)}' in metric`, expr.span);
+          throw new SemError(DiagCode.Unsupported, `unsupported reference '${refName(expr)}'`, expr.span);
         }
+        this.requireComposable(owner, expr.name, expr.span);
         return this.expandRef(expr.object.name, expr.name, expr.span, visiting);
       }
       case NodeKind.Binary: {
         const op = ARITH_OPS.get(expr.op);
         if (op === undefined) {
-          throw new SemError(DiagCode.TypeMismatch, `operator '${expr.op}' is not valid in a metric expression`, expr.span);
+          throw new SemError(DiagCode.TypeMismatch, `operator '${expr.op}' is not valid here`, expr.span);
         }
         return {
           k: "bin",
           op,
-          left: this.expandExpr(model, expr.left, ownFilter, visiting),
-          right: this.expandExpr(model, expr.right, ownFilter, visiting)
+          left: this.expandExpr(model, expr.left, owner, visiting),
+          right: this.expandExpr(model, expr.right, owner, visiting)
         };
       }
       case NodeKind.Unary: {
         if (expr.op !== "-") {
-          throw new SemError(DiagCode.TypeMismatch, "'not' is not valid in a metric expression", expr.span);
+          throw new SemError(DiagCode.TypeMismatch, "'not' is not valid here", expr.span);
         }
         return {
           k: "bin",
           op: ArithOp.Mul,
           left: { k: "num", value: -1 },
-          right: this.expandExpr(model, expr.operand, ownFilter, visiting)
+          right: this.expandExpr(model, expr.operand, owner, visiting)
         };
       }
       default:
-        throw new SemError(DiagCode.TypeMismatch, "unsupported metric expression", expr.span);
+        throw new SemError(DiagCode.TypeMismatch, "unsupported expression", expr.span);
     }
   }
 
-  private expandCall(model: string, expr: CallExpr, ownFilter: Expr | undefined): MExpr {
+  private requireComposable(owner: DeclKind, name: string, span: Span): void {
+    if (owner === "measure") {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `a measure cannot reference '${name}'; a measure is a single aggregate over its own columns`,
+        span
+      );
+    }
+  }
+
+  private expandCall(model: string, expr: CallExpr): MExpr {
     const func = expr.callee.toLowerCase();
     if (!AGG_FUNCS.has(func)) {
       throw new SemError(
@@ -429,10 +525,12 @@ export class Analyzer {
         expr.span
       );
     }
+    if (expr.distinct && !aggAllowsDistinct(func as AggFunc)) {
+      throw new SemError(DiagCode.TypeMismatch, `aggregate '${func}' does not support 'distinct'`, expr.calleeSpan);
+    }
     const arg = this.resolveColExpr(model, expr.args[0]!);
     const factModel = this.aggModel(model, arg, expr.span);
-    const filter = ownFilter !== undefined ? this.resolveCond(ownFilter, this.columnResolver(factModel)) : undefined;
-    return { k: "agg", model: factModel, func: func as AggFunc, arg, filter };
+    return { k: "agg", model: factModel, func: func as AggFunc, arg, distinct: expr.distinct };
   }
 
   private aggModel(declaring: string, arg: ColExpr, span: Span): string {
@@ -772,13 +870,7 @@ export class Analyzer {
 
   private attachPath(fact: FactPlan, target: string, span: Span): void {
     const path = this.joinPath(fact.model, target, span);
-    if (path.fanOut) {
-      throw new SemError(
-        DiagCode.Unsupported,
-        `dimension on '${target}' reaches '${fact.model}' through a fan-out join; this needs the phase 2 child-CTE strategy`,
-        span
-      );
-    }
+    if (path.fanOut) fact.fannedOut = true;
     for (const edge of path.edges) this.addJoin(fact, edge);
   }
 
@@ -885,6 +977,17 @@ export class Analyzer {
 
 function refName(ref: RefExpr): string {
   return ref.name;
+}
+
+function hasAggregate(node: MExpr): boolean {
+  switch (node.k) {
+    case "agg":
+      return true;
+    case "bin":
+      return hasAggregate(node.left) || hasAggregate(node.right);
+    case "num":
+      return false;
+  }
 }
 
 function parseDurationDays(text: string, span: Span): number {

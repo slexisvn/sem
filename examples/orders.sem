@@ -5,36 +5,53 @@ model Orders {
   join Customers on customer_id = Customers.id (many_to_one)
   join Items on id = Items.order_id (one_to_many)
 
-  dimension region: string = region
-  dimension status: string = status
-  dimension ordered_at: time = ordered_at
+  dimension region: string
+  dimension status: string
+  dimension ordered_at: time
 
-  measure gross = sum(amount)
+  measure gross       = sum(amount)
+  measure order_count = count(id)
+  measure buyer_count = count(distinct customer_id)
+  measure amount_max  = max(amount)
 
-  metric revenue     = sum(amount) where status = 'paid'
-  metric refunds     = sum(amount) where status = 'refunded'
+  metric revenue     = gross where status = 'paid'
+  metric refunds     = gross where status = 'refunded'
   metric net_revenue = revenue - refunds
-  metric orders      = count(id)
+  metric orders      = order_count
   metric aov         = revenue / orders
-  metric units       = count(Items.id)
+  metric buyers      = buyer_count
+  metric largest     = amount_max
 }
 
 model Customers {
   table public.customers
   primary_key id
 
-  dimension country: string = country
-  dimension tier: string = tier
+  dimension country: string
+  dimension tier: string
 }
 
 model Items {
   table public.items
   primary_key id
 
-  dimension sku: string = sku
+  dimension sku: string
+
+  measure item_count = count(id)
+  metric  units      = item_count
 }
 
 policy analyst_vn on Orders restrict region = 'VN'
 
+materialize monthly_revenue as
+  show revenue, revenue.mom, revenue.rolling(90d) by ordered_at.month
+
 assert revenue where ordered_at.month = '2026-01' == 1250000
 assert aov where region = 'VN' between 20 and 60
+
+# Sample queries (run with "Sem: Compile Query to SQL"):
+#   show revenue, net_revenue, aov by region
+#   show buyers by Customers.tier                      # distinct count, joined dimension
+#   show revenue by Items.sku                          # fan-out: dedup on order id before summing
+#   show revenue.share by region                       # each region's share of total
+#   show revenue.yoy by ordered_at.month, region       # per-region year-over-year on a dense date spine

@@ -1,13 +1,11 @@
 import { TimeGrain } from "../config/constants.js";
-import { SqlDialect } from "./dialect.js";
+import { BaseDialect } from "./dialect.js";
 
-const SIMPLE_IDENT = /^[a-z_][a-z0-9_]*$/;
-
-export class PostgresDialect implements SqlDialect {
+export class PostgresDialect extends BaseDialect {
   public readonly name = "postgres";
 
-  public ident(name: string): string {
-    return SIMPLE_IDENT.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+  protected quote(name: string): string {
+    return `"${name.replace(/"/g, '""')}"`;
   }
 
   public paramPlaceholder(index1: number): string {
@@ -18,8 +16,8 @@ export class PostgresDialect implements SqlDialect {
     return `DATE_TRUNC('${grain}', ${expr})`;
   }
 
-  public limit(n: number): string {
-    return `LIMIT ${n}`;
+  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {
+    return `generate_series(${startExpr}, ${endExpr}, INTERVAL '1 ${grain}') AS ${this.ident(columnAlias)}`;
   }
 }
 

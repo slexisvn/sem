@@ -130,6 +130,12 @@ export const FANOUT_CARDINALITIES: ReadonlySet<Cardinality> = new Set([
 export const COMMENT_CHAR = "#";
 export const CTE_SUFFIX = "_agg";
 export const COMPONENT_PREFIX = "m";
+export const DEDUP_KEY_ALIAS = "__pk";
+export const DEDUP_VALUE_PREFIX = "__v";
+export const GRID_CTE = "grid";
+export const SPINE_CTE = "spine";
+export const DENSE_CTE = "dense";
+export const SPINE_PERIOD_COL = "period";
 
 export type FanOutStrategy = "cte-per-fact";
 

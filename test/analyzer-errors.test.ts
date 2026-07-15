@@ -56,7 +56,7 @@ describe("positioned diagnostics", () => {
         table public.a
         primary_key id
         measure total = sum(x)
-        metric total_m = sum(x)
+        metric total_m = total
       }
       model B {
         table public.b
@@ -75,7 +75,7 @@ describe("positioned diagnostics", () => {
         primary_key id
         join Mid1 on m1_id = Mid1.id (many_to_one)
         join Mid2 on m2_id = Mid2.id (many_to_one)
-        metric total = sum(x)
+        measure total = sum(x)
       }
       model Mid1 {
         table public.mid1
@@ -104,7 +104,7 @@ describe("positioned diagnostics", () => {
         primary_key id
         join L on l_id = L.id (many_to_one)
         join R on r_id = R.id (many_to_one)
-        metric total = sum(x)
+        measure total = sum(x)
       }
       model L {
         table public.l
@@ -121,9 +121,10 @@ describe("positioned diagnostics", () => {
     expect(err.code).toBe(DiagCode.AmbiguousReference);
   });
 
-  test("fan-out via a one-to-many dimension is refused rather than silently doubled", () => {
-    const err = captureError(() => run("show revenue by Items.sku"));
-    expect(err.code).toBe(DiagCode.Unsupported);
+  test("fan-out via a one-to-many dimension dedupes the fact rather than silently doubling", () => {
+    const { sql } = run("show revenue by Items.sku");
+    expect(sql).toContain("SELECT DISTINCT orders.id AS __pk");
+    expect(sql).toContain("SUM(orders.__v0) AS revenue");
   });
 
   test("catalog rejects duplicate model names", () => {

@@ -48,10 +48,15 @@ describe("the four metric kinds", () => {
     expect(likeQuery.params).toEqual(["paid", "V%"]);
   });
 
-  test("boolean predicates preserve grouping and negation", () => {
+  test("boolean predicates preserve grouping and negation includes NULL rows", () => {
     const { sql, params } = run("show revenue where not (region = 'VN' or status = 'refunded')");
-    expect(sql).toContain("WHERE (NOT (orders.region = $2 OR orders.status = $3))");
+    expect(sql).toContain("WHERE NOT COALESCE(((orders.region = $2 OR orders.status = $3)), FALSE)");
     expect(params).toEqual(["paid", "VN", "refunded"]);
+  });
+
+  test("negating a single comparison keeps NULL dimension rows in the result", () => {
+    const { sql } = run("show revenue where not region = 'VN'");
+    expect(sql).toContain("NOT COALESCE((orders.region = $2), FALSE)");
   });
 
   test("aggregate arguments can be arithmetic expressions", () => {
@@ -59,7 +64,7 @@ describe("the four metric kinds", () => {
       model Orders {
         table public.orders
         primary_key id
-        metric weighted = sum(amount * qty)
+        measure weighted = sum(amount * qty)
       }
     `);
     const { sql } = compileWithCatalog(catalog, "show weighted");

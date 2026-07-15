@@ -9,6 +9,7 @@ import { parseProgram, parseQuery } from "./parser/parser.js";
 
 export * from "./lexer/token.js";
 export * from "./config/constants.js";
+export * from "./config/aggregates.js";
 export * from "./diagnostics/diagnostic.js";
 export * from "./ast/nodes.js";
 export { tokenize, Lexer } from "./lexer/lexer.js";

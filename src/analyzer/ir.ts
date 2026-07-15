@@ -1,4 +1,5 @@
 import { AggFunc, ArithOp, CmpOp, DimType, TimeGrain, TransformKind } from "../config/constants.js";
+import { aggReAgg, ReAgg } from "../config/aggregates.js";
 
 export interface ColRef {
   readonly model: string;
@@ -26,7 +27,14 @@ export type Cond =
   | { readonly k: "like"; readonly left: ColExpr; readonly pattern: ValueRef };
 
 export type MExpr =
-  | { readonly k: "agg"; readonly model: string; readonly func: AggFunc; readonly arg: ColExpr; readonly filter?: Cond }
+  | {
+      readonly k: "agg";
+      readonly model: string;
+      readonly func: AggFunc;
+      readonly arg: ColExpr;
+      readonly distinct: boolean;
+      readonly filter?: Cond;
+    }
   | { readonly k: "bin"; readonly op: ArithOp; readonly left: MExpr; readonly right: MExpr }
   | { readonly k: "num"; readonly value: number };
 
@@ -51,6 +59,7 @@ export interface FactPlan {
   readonly model: string;
   readonly joins: JoinEdge[];
   filter?: Cond;
+  fannedOut?: boolean;
 }
 
 export interface DimPlan {
@@ -61,9 +70,9 @@ export interface DimPlan {
 }
 
 export type TransformIR =
-  | { readonly kind: TransformKind.Mom | TransformKind.Yoy; readonly lag: number; readonly orderDim: string }
-  | { readonly kind: TransformKind.Rolling; readonly rows: number; readonly orderDim: string }
-  | { readonly kind: TransformKind.Cumulative; readonly orderDim: string }
+  | { readonly kind: TransformKind.Mom | TransformKind.Yoy; readonly lag: number; readonly orderDim: string; readonly partition: string[] }
+  | { readonly kind: TransformKind.Rolling; readonly rows: number; readonly orderDim: string; readonly combinator: ReAgg; readonly partition: string[] }
+  | { readonly kind: TransformKind.Cumulative; readonly orderDim: string; readonly combinator: ReAgg; readonly partition: string[] }
   | { readonly kind: TransformKind.Share; readonly partition: string[] };
 
 export interface SelectMetric {
@@ -116,5 +125,20 @@ export function modelSet(expr: MExpr, into: Set<string> = new Set()): Set<string
       return into;
     case "num":
       return into;
+  }
+}
+
+export function reAggOfExpr(expr: MExpr): ReAgg {
+  switch (expr.k) {
+    case "agg":
+      return aggReAgg(expr.func, expr.distinct);
+    case "num":
+      return ReAgg.None;
+    case "bin": {
+      if (expr.op !== ArithOp.Add && expr.op !== ArithOp.Sub) return ReAgg.None;
+      const left = reAggOfExpr(expr.left);
+      const right = reAggOfExpr(expr.right);
+      return left === ReAgg.Sum && right === ReAgg.Sum ? ReAgg.Sum : ReAgg.None;
+    }
   }
 }

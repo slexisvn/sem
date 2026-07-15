@@ -34,4 +34,11 @@ describe("SqlDialect is the seam for warehouse differences", () => {
     expect(mysql.ident("simple_name")).toBe("simple_name");
     expect(mysql.ident("Order Total")).toBe("`Order Total`");
   });
+
+  test("qualifiedName quotes each schema-qualified segment independently", () => {
+    expect(postgres.qualifiedName("public.orders")).toBe("public.orders");
+    expect(postgres.qualifiedName('public.Order List')).toBe('public."Order List"');
+    expect(mysql.qualifiedName("public.Order List")).toBe("public.`Order List`");
+    expect(bigquery.qualifiedName("proj.data set.tbl")).toBe("proj.`data set`.tbl");
+  });
 });

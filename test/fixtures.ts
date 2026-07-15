@@ -14,13 +14,19 @@ model Orders {
 
   measure gross = sum(amount)
   measure cnt = count(id)
+  measure amount_avg = avg(amount)
+  measure amount_max = max(amount)
+  measure buyer_count = count(distinct customer_id)
 
-  metric revenue = sum(amount) where status = 'paid'
-  metric refunds = sum(amount) where status = 'refunded'
+  metric revenue = gross where status = 'paid'
+  metric refunds = gross where status = 'refunded'
   metric net_revenue = revenue - refunds
-  metric orders = count(id)
+  metric orders = cnt
   metric aov = revenue / orders
   metric roas = revenue / ad_spend
+  metric avg_amount = amount_avg
+  metric buyers = buyer_count
+  metric peak = amount_max
 }
 
 model Customers {
@@ -38,7 +44,7 @@ model AdSpend {
   dimension region: string = region
 
   measure cost_sum = sum(cost)
-  metric ad_spend = sum(cost)
+  metric ad_spend = cost_sum
 }
 
 model Items {
@@ -62,7 +68,8 @@ model LineItems {
   table public.line_items
   primary_key id
   join Orders on order_id = Orders.id (many_to_one)
-  metric units = sum(qty)
+  measure qty_sum = sum(qty)
+  metric units = qty_sum
 }
 model Orders {
   table public.orders
@@ -85,14 +92,17 @@ model Orders {
   dimension region: string = region
   dimension status: string = status
   dimension ordered_at: time = ordered_at
-  metric revenue = sum(amount) where status = 'paid'
-  metric orders = count(id)
-  metric units = count(Items.id)
+  measure amount_sum = sum(amount)
+  measure order_count = count(id)
+  metric revenue = amount_sum where status = 'paid'
+  metric orders = order_count
 }
 model Items {
   table public.items
   primary_key id
   dimension sku: string = sku
+  measure item_count = count(id)
+  metric units = item_count
 }
 policy analyst_vn on Orders restrict region = 'VN'
 assert revenue where ordered_at.month = '2026-01' == 1250000

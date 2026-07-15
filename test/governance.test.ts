@@ -81,7 +81,7 @@ describe("phase 3 · docs & symbols", () => {
     const { catalog } = governedCatalog();
     const docs = generateDocs(catalog);
     expect(docs).toContain("## Orders");
-    expect(docs).toContain("`revenue` = sum(amount) where status = 'paid'");
+    expect(docs).toContain("`revenue` = amount_sum where status = 'paid'");
     expect(docs).toContain("`Items` (one_to_many)");
   });
 
@@ -89,7 +89,7 @@ describe("phase 3 · docs & symbols", () => {
     const { catalog } = governedCatalog();
     const symbols = new SymbolService(catalog);
     expect(symbols.definitionOf("revenue")?.kind).toBe("metric");
-    expect(symbols.hover("units")).toContain("count(Items.id)");
+    expect(symbols.hover("units")).toContain("item_count");
     expect(symbols.hover("revenue")).toContain("**Metric** `Orders.revenue`");
     expect(symbols.hover("region")).toContain("**Dimension** `Orders.region`");
     expect(symbols.completions("re")).toContain("revenue");

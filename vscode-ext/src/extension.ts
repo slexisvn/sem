@@ -16,8 +16,8 @@ const keywordCompletions: readonly KeywordCompletion[] = [
   { label: "primary_key", detail: "Set model primary key", contexts: ["modelBody"], snippet: "primary_key ${1:id}" },
   { label: "join", detail: "Declare a join", contexts: ["modelBody"], snippet: "join ${1:Model} on ${2:local_id} = ${1:Model}.${3:id} (${4|many_to_one,one_to_many,one_to_one,many_to_many|})" },
   { label: "dimension", detail: "Declare a dimension", contexts: ["modelBody"], snippet: "dimension ${1:name}: ${2|string,number,boolean,time|} = ${3:column}" },
-  { label: "measure", detail: "Declare a measure", contexts: ["modelBody"], snippet: "measure ${1:name} = ${2|sum,count,avg,min,max|}(${3:column})" },
-  { label: "metric", detail: "Declare a metric", contexts: ["modelBody"], snippet: "metric ${1:name} = ${2:expression}" },
+  { label: "measure", detail: "Declare a measure (aggregate primitive over this model's columns)", contexts: ["modelBody"], snippet: "measure ${1:name} = ${2|sum,count,avg,min,max|}(${3:column})" },
+  { label: "metric", detail: "Declare a metric (built from measures: simple, ratio, or derived)", contexts: ["modelBody"], snippet: "metric ${1:name} = ${2:measure}" },
   { label: "string", detail: "Dimension type", contexts: ["type"] },
   { label: "number", detail: "Dimension type", contexts: ["type"] },
   { label: "boolean", detail: "Dimension type", contexts: ["type"] },
@@ -44,9 +44,11 @@ const keywordCompletions: readonly KeywordCompletion[] = [
   { label: "false", detail: "Boolean literal", contexts: ["expression", "query"] },
   { label: "sum", detail: "Aggregate function", contexts: ["expression", "query"], snippet: "sum(${1:column})" },
   { label: "count", detail: "Aggregate function", contexts: ["expression", "query"], snippet: "count(${1:column})" },
+  { label: "count distinct", detail: "Distinct count (fan-out safe)", contexts: ["expression", "query"], snippet: "count(distinct ${1:column})" },
   { label: "avg", detail: "Aggregate function", contexts: ["expression", "query"], snippet: "avg(${1:column})" },
   { label: "min", detail: "Aggregate function", contexts: ["expression", "query"], snippet: "min(${1:column})" },
-  { label: "max", detail: "Aggregate function", contexts: ["expression", "query"], snippet: "max(${1:column})" }
+  { label: "max", detail: "Aggregate function", contexts: ["expression", "query"], snippet: "max(${1:column})" },
+  { label: "distinct", detail: "Deduplicate an aggregate's argument", contexts: ["expression"] }
 ];
 
 type CompletionContext = "topLevel" | "modelBody" | "type" | "joinCardinality" | "expression" | "query";
@@ -285,6 +287,7 @@ function keywordKind(label: string): vscode.CompletionItemKind {
   switch (label) {
     case "sum":
     case "count":
+    case "count distinct":
     case "avg":
     case "min":
     case "max":

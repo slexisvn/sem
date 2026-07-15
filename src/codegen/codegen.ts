@@ -14,7 +14,20 @@ import {
   TransformIR,
   ValueRef
 } from "../analyzer/ir.js";
-import { ArithOp, CmpOp, COMPONENT_PREFIX, CTE_SUFFIX, TransformKind } from "../config/constants.js";
+import {
+  ArithOp,
+  CmpOp,
+  COMPONENT_PREFIX,
+  CTE_SUFFIX,
+  DEDUP_KEY_ALIAS,
+  DEDUP_VALUE_PREFIX,
+  DENSE_CTE,
+  GRID_CTE,
+  SPINE_CTE,
+  SPINE_PERIOD_COL,
+  TransformKind
+} from "../config/constants.js";
+import { REAGG_SQL } from "../config/aggregates.js";
 import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { SqlDialect } from "./dialect.js";
 
@@ -47,6 +60,11 @@ interface Registry {
   readonly byKey: Map<string, string>;
 }
 
+interface Column {
+  readonly name: string;
+  readonly node: MExpr;
+}
+
 export class Generator {
   private readonly catalog: Catalog;
   private readonly dialect: SqlDialect;
@@ -64,38 +82,30 @@ export class Generator {
   private genWindowed(plan: Plan): SqlResult {
     const fact = plan.facts[0]!;
     const params = new ParamBag(this.dialect);
-    const gridSelect: string[] = [];
-    const groupItems: string[] = [];
-
-    for (const dim of plan.dims) {
-      const expr = this.renderDim(dim, fact.model, params);
-      gridSelect.push(`${expr} AS ${this.dialect.ident(dim.outputName)}`);
-      groupItems.push(expr);
-    }
-
     const bases = new Map<string, MExpr>();
     for (const select of plan.selects) if (!bases.has(select.baseName)) bases.set(select.baseName, select.expr);
-    for (const [name, expr] of bases) {
-      gridSelect.push(`${this.renderMExpr(expr, params)} AS ${this.dialect.ident(name)}`);
-    }
+    const columns = [...bases].map(([name, expr]) => ({ name, node: expr }));
 
-    const grid: string[] = [];
-    grid.push(`SELECT ${gridSelect.join(", ")}`);
-    grid.push(`FROM ${this.tableOf(fact.model)} AS ${this.alias(fact.model)}`);
-    grid.push(...this.renderJoins(fact));
-    if (fact.filter !== undefined) grid.push(`WHERE ${this.renderCond(fact.filter, params)}`);
-    if (groupItems.length > 0) grid.push(`GROUP BY ${groupItems.join(", ")}`);
+    const grid = this.aggregationBody(fact, plan.dims, columns, params);
+    const ctes = [`${GRID_CTE} AS (\n  ${grid.join("\n  ")}\n)`];
+
+    const timeDim = plan.dims.find((dim) => dim.grain !== undefined);
+    const hasSeries = plan.selects.some((s) => s.transform !== undefined && s.transform.kind !== TransformKind.Share);
+    const densify = hasSeries && timeDim !== undefined && this.dialect.periodSeries !== undefined;
+    const source = densify ? DENSE_CTE : GRID_CTE;
+
+    if (densify) ctes.push(...this.densifyCtes(plan, timeDim!, [...bases.keys()]));
 
     const outer: string[] = [];
     for (const dim of plan.dims) outer.push(this.dialect.ident(dim.outputName));
     for (const select of plan.selects) {
-      outer.push(`${this.renderWindow(select)} AS ${this.dialect.ident(select.name)}`);
+      outer.push(`${this.renderWindow(select, source)} AS ${this.dialect.ident(select.name)}`);
     }
 
     const lines: string[] = [];
-    lines.push(`WITH grid AS (\n  ${grid.join("\n  ")}\n)`);
+    lines.push(`WITH ${ctes.join(",\n")}`);
     lines.push(`SELECT ${outer.join(", ")}`);
-    lines.push("FROM grid");
+    lines.push(`FROM ${source}`);
     if (plan.orderBy !== undefined) {
       lines.push(`ORDER BY ${this.dialect.ident(plan.orderBy.name)} ${plan.orderBy.dir.toUpperCase()}`);
     }
@@ -104,8 +114,40 @@ export class Generator {
     return { sql: `${lines.join("\n")};`, params: params.collect() };
   }
 
-  private renderWindow(select: SelectMetric): string {
-    const x = `grid.${this.dialect.ident(select.baseName)}`;
+  private densifyCtes(plan: Plan, timeDim: DimPlan, baseNames: string[]): string[] {
+    const time = this.dialect.ident(timeDim.outputName);
+    const partitionDims = plan.dims.filter((dim) => dim.outputName !== timeDim.outputName);
+    const partitionIdents = partitionDims.map((dim) => this.dialect.ident(dim.outputName));
+
+    const minExpr = `(SELECT MIN(${time}) FROM ${GRID_CTE})`;
+    const maxExpr = `(SELECT MAX(${time}) FROM ${GRID_CTE})`;
+    const series = this.dialect.periodSeries!(timeDim.grain!, minExpr, maxExpr, SPINE_PERIOD_COL);
+    const period = this.dialect.ident(SPINE_PERIOD_COL);
+
+    const spineSelect = [`${period} AS ${time}`, ...partitionIdents.map((id) => `combos.${id} AS ${id}`)];
+    const spineLines = [`SELECT ${spineSelect.join(", ")}`, `FROM ${series}`];
+    if (partitionIdents.length > 0) {
+      spineLines.push(`CROSS JOIN (SELECT DISTINCT ${partitionIdents.join(", ")} FROM ${GRID_CTE}) AS combos`);
+    }
+
+    const denseSelect = [`${SPINE_CTE}.${time} AS ${time}`];
+    for (const id of partitionIdents) denseSelect.push(`${SPINE_CTE}.${id} AS ${id}`);
+    for (const base of baseNames) {
+      const id = this.dialect.ident(base);
+      denseSelect.push(`${GRID_CTE}.${id} AS ${id}`);
+    }
+    const joinKeys = [time, ...partitionIdents].map((id) => `${SPINE_CTE}.${id} = ${GRID_CTE}.${id}`);
+    const denseLines = [
+      `SELECT ${denseSelect.join(", ")}`,
+      `FROM ${SPINE_CTE}`,
+      `LEFT JOIN ${GRID_CTE} ON ${joinKeys.join(" AND ")}`
+    ];
+
+    return [`${SPINE_CTE} AS (\n  ${spineLines.join("\n  ")}\n)`, `${DENSE_CTE} AS (\n  ${denseLines.join("\n  ")}\n)`];
+  }
+
+  private renderWindow(select: SelectMetric, source: string): string {
+    const x = `${source}.${this.dialect.ident(select.baseName)}`;
     const t = select.transform;
     if (t === undefined) return x;
     return this.renderTransform(x, t);
@@ -115,22 +157,31 @@ export class Generator {
     switch (t.kind) {
       case TransformKind.Mom:
       case TransformKind.Yoy: {
-        const order = this.dialect.ident(t.orderDim);
-        return `(${x} / NULLIF(LAG(${x}, ${t.lag}) OVER (ORDER BY ${order}), 0) - 1)`;
+        const over = this.windowSpec(t.partition, t.orderDim);
+        return `(${x} / NULLIF(LAG(${x}, ${t.lag}) OVER (${over}), 0) - 1)`;
       }
       case TransformKind.Rolling: {
-        const order = this.dialect.ident(t.orderDim);
-        return `SUM(${x}) OVER (ORDER BY ${order} ROWS BETWEEN ${t.rows - 1} PRECEDING AND CURRENT ROW)`;
+        const over = this.windowSpec(t.partition, t.orderDim, `ROWS BETWEEN ${t.rows - 1} PRECEDING AND CURRENT ROW`);
+        return `${REAGG_SQL.get(t.combinator)!}(${x}) OVER (${over})`;
       }
       case TransformKind.Cumulative: {
-        const order = this.dialect.ident(t.orderDim);
-        return `SUM(${x}) OVER (ORDER BY ${order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`;
+        const over = this.windowSpec(t.partition, t.orderDim, "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
+        return `${REAGG_SQL.get(t.combinator)!}(${x}) OVER (${over})`;
       }
       case TransformKind.Share: {
-        const over = t.partition.length > 0 ? `PARTITION BY ${t.partition.map((d) => this.dialect.ident(d)).join(", ")}` : "";
-        return `(${x} / NULLIF(SUM(${x}) OVER (${over}), 0))`;
+        return `(${x} / NULLIF(SUM(${x}) OVER (${this.partitionClause(t.partition)}), 0))`;
       }
     }
+  }
+
+  private windowSpec(partition: string[], orderDim: string, frame?: string): string {
+    const parts = [this.partitionClause(partition), `ORDER BY ${this.dialect.ident(orderDim)}`];
+    if (frame !== undefined) parts.push(frame);
+    return parts.filter((part) => part.length > 0).join(" ");
+  }
+
+  private partitionClause(partition: string[]): string {
+    return partition.length > 0 ? `PARTITION BY ${partition.map((d) => this.dialect.ident(d)).join(", ")}` : "";
   }
 
   private alias(model: string): string {
@@ -145,27 +196,81 @@ export class Generator {
     return this.catalog.models.get(model)!.table;
   }
 
+  private tableRef(model: string): string {
+    return `${this.dialect.qualifiedName(this.tableOf(model))} AS ${this.alias(model)}`;
+  }
+
+  private aggregationBody(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+    return fact.fannedOut === true
+      ? this.dedupedAggregation(fact, dims, columns, params)
+      : this.directAggregation(fact, dims, columns, params);
+  }
+
+  private directAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+    const dimExprs = dims.map((dim) => this.renderDim(dim, fact.model, params));
+    const selectItems = dims.map((dim, i) => `${dimExprs[i]} AS ${this.dialect.ident(dim.outputName)}`);
+    for (const column of columns) {
+      selectItems.push(`${this.renderMExpr(column.node, params)} AS ${this.dialect.ident(column.name)}`);
+    }
+
+    const lines = [`SELECT ${selectItems.join(", ")}`, `FROM ${this.tableRef(fact.model)}`, ...this.renderJoins(fact)];
+    if (fact.filter !== undefined) lines.push(`WHERE ${this.renderCond(fact.filter, params)}`);
+    if (dimExprs.length > 0) lines.push(`GROUP BY ${dimExprs.join(", ")}`);
+    return lines;
+  }
+
+  private dedupedAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+    const alias = this.alias(fact.model);
+    const pkColumn = this.catalog.models.get(fact.model)!.primaryKey;
+    const values = new Map<string, string>();
+    const valueProjections: string[] = [];
+
+    const dimProjections = dims.map(
+      (dim) => `${this.renderDim(dim, fact.model, params)} AS ${this.dialect.ident(dim.outputName)}`
+    );
+
+    const project = (node: MExpr): MExpr => {
+      if (node.k === "bin") return { k: "bin", op: node.op, left: project(node.left), right: project(node.right) };
+      if (node.k === "num") return node;
+      const key = signature(node);
+      let valueAlias = values.get(key);
+      if (valueAlias === undefined) {
+        valueAlias = `${DEDUP_VALUE_PREFIX}${values.size}`;
+        values.set(key, valueAlias);
+        const argSql = this.renderColExpr(node.arg, params);
+        const valueSql =
+          node.filter !== undefined ? `CASE WHEN ${this.renderCond(node.filter, params)} THEN ${argSql} END` : argSql;
+        valueProjections.push(`${valueSql} AS ${this.dialect.ident(valueAlias)}`);
+      }
+      return { k: "agg", model: fact.model, func: node.func, distinct: node.distinct, arg: { k: "col", ref: { model: fact.model, column: valueAlias } } };
+    };
+
+    const outerColumns = columns.map(
+      (column) => `${this.renderMExpr(project(column.node), params)} AS ${this.dialect.ident(column.name)}`
+    );
+
+    const pkProjection = `${alias}.${this.dialect.ident(pkColumn)} AS ${this.dialect.ident(DEDUP_KEY_ALIAS)}`;
+    const inner = [
+      `SELECT DISTINCT ${[pkProjection, ...dimProjections, ...valueProjections].join(", ")}`,
+      `FROM ${this.tableRef(fact.model)}`,
+      ...this.renderJoins(fact)
+    ];
+    if (fact.filter !== undefined) inner.push(`WHERE ${this.renderCond(fact.filter, params)}`);
+
+    const outerDims = dims.map((dim) => `${alias}.${this.dialect.ident(dim.outputName)}`);
+    const selectItems = dims.map((dim, i) => `${outerDims[i]} AS ${this.dialect.ident(dim.outputName)}`).concat(outerColumns);
+
+    const lines = [`SELECT ${selectItems.join(", ")}`, `FROM (`, `  ${inner.join("\n  ")}`, `) AS ${alias}`];
+    if (outerDims.length > 0) lines.push(`GROUP BY ${outerDims.join(", ")}`);
+    return lines;
+  }
+
   private genSingle(plan: Plan): SqlResult {
     const fact = plan.facts[0]!;
     const params = new ParamBag(this.dialect);
-    const selectItems: string[] = [];
-    const groupItems: string[] = [];
+    const columns = plan.selects.map((select) => ({ name: select.name, node: select.expr }));
 
-    for (const dim of plan.dims) {
-      const expr = this.renderDim(dim, fact.model, params);
-      selectItems.push(`${expr} AS ${this.dialect.ident(dim.outputName)}`);
-      groupItems.push(expr);
-    }
-    for (const select of plan.selects) {
-      selectItems.push(`${this.renderMExpr(select.expr, params)} AS ${this.dialect.ident(select.name)}`);
-    }
-
-    const lines: string[] = [];
-    lines.push(`SELECT ${selectItems.join(", ")}`);
-    lines.push(`FROM ${this.tableOf(fact.model)} AS ${this.alias(fact.model)}`);
-    lines.push(...this.renderJoins(fact));
-    if (fact.filter !== undefined) lines.push(`WHERE ${this.renderCond(fact.filter, params)}`);
-    if (groupItems.length > 0) lines.push(`GROUP BY ${groupItems.join(", ")}`);
+    const lines = this.aggregationBody(fact, plan.dims, columns, params);
     if (plan.having !== undefined) lines.push(`HAVING ${this.renderMetricCond(plan.having, params)}`);
     if (plan.orderBy !== undefined) {
       lines.push(`ORDER BY ${this.dialect.ident(plan.orderBy.name)} ${plan.orderBy.dir.toUpperCase()}`);
@@ -206,25 +311,8 @@ export class Generator {
   }
 
   private renderCte(fact: FactPlan, plan: Plan, registry: Registry, params: ParamBag): string {
-    const selectItems: string[] = [];
-    const groupItems: string[] = [];
-
-    for (const dim of plan.dims) {
-      const expr = this.renderDim(dim, fact.model, params);
-      selectItems.push(`${expr} AS ${this.dialect.ident(dim.outputName)}`);
-      groupItems.push(expr);
-    }
-    for (const component of registry.order) {
-      selectItems.push(`${this.renderMExpr(component.node, params)} AS ${this.dialect.ident(component.name)}`);
-    }
-
-    const inner: string[] = [];
-    inner.push(`SELECT ${selectItems.join(", ")}`);
-    inner.push(`FROM ${this.tableOf(fact.model)} AS ${this.alias(fact.model)}`);
-    inner.push(...this.renderJoins(fact));
-    if (fact.filter !== undefined) inner.push(`WHERE ${this.renderCond(fact.filter, params)}`);
-    if (groupItems.length > 0) inner.push(`GROUP BY ${groupItems.join(", ")}`);
-
+    const columns = registry.order.map((component) => ({ name: component.name, node: component.node }));
+    const inner = this.aggregationBody(fact, plan.dims, columns, params);
     return `${this.cteName(fact.model)} AS (\n  ${inner.join("\n  ")}\n)`;
   }
 
@@ -288,7 +376,7 @@ export class Generator {
   private renderJoins(fact: FactPlan): string[] {
     return fact.joins.map((edge) => {
       const op = CMP_SQL.get(edge.op)!;
-      return `LEFT JOIN ${this.tableOf(edge.target)} AS ${this.alias(edge.target)} ON ${this.renderColRef(edge.left)} ${op} ${this.renderColRef(edge.right)}`;
+      return `LEFT JOIN ${this.tableRef(edge.target)} ON ${this.renderColRef(edge.left)} ${op} ${this.renderColRef(edge.right)}`;
     });
   }
 
@@ -302,7 +390,8 @@ export class Generator {
       case "agg": {
         const arg = this.renderColExpr(node.arg, params);
         const inner = node.filter !== undefined ? `CASE WHEN ${this.renderCond(node.filter, params)} THEN ${arg} END` : arg;
-        return `${node.func.toUpperCase()}(${inner})`;
+        const prefix = node.distinct ? "DISTINCT " : "";
+        return `${node.func.toUpperCase()}(${prefix}${inner})`;
       }
       case "bin":
         return this.renderArith(node.op, this.renderMExpr(node.left, params), this.renderMExpr(node.right, params));
@@ -320,7 +409,7 @@ export class Generator {
       case "or":
         return `(${this.renderMetricCond(cond.left, params)} OR ${this.renderMetricCond(cond.right, params)})`;
       case "not":
-        return `(NOT ${this.renderMetricCond(cond.operand, params)})`;
+        return `NOT COALESCE((${this.renderMetricCond(cond.operand, params)}), FALSE)`;
       case "between":
         return `${this.renderMExpr(cond.left, params)} BETWEEN ${params.add(cond.lo.value)} AND ${params.add(cond.hi.value)}`;
     }
@@ -337,7 +426,7 @@ export class Generator {
       case "or":
         return `(${this.renderCond(cond.left, params)} OR ${this.renderCond(cond.right, params)})`;
       case "not":
-        return `(NOT ${this.renderCond(cond.operand, params)})`;
+        return `NOT COALESCE((${this.renderCond(cond.operand, params)}), FALSE)`;
       case "in": {
         const items = cond.values.map((v) => params.add(v.value)).join(", ");
         return `${this.renderColExpr(cond.left, params)} IN (${items})`;
@@ -379,7 +468,7 @@ function isValue(node: ColExpr | ValueRef): node is ValueRef {
 function signature(node: MExpr): string {
   switch (node.k) {
     case "agg":
-      return `${node.func}(${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
+      return `${node.func}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
     case "bin":
       return `(${signature(node.left)}${node.op}${signature(node.right)})`;
     case "num":

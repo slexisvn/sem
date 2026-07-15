@@ -51,6 +51,7 @@ export interface CallExpr {
   readonly callee: string;
   readonly calleeSpan: Span;
   readonly args: Expr[];
+  readonly distinct: boolean;
   readonly span: Span;
 }
 
