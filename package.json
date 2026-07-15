@@ -15,7 +15,10 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "vite build --config web/vite.config.ts",
+    "web:preview": "vite preview --config web/vite.config.ts"
   },
   "keywords": [
     "semantic-layer",
@@ -26,9 +29,21 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@types/prismjs": "^1.26.6",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
     "esbuild": "^0.21.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsup": "^8.5.1",
     "typescript": "^5.6.3",
+    "vite": "^5.4.21",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@slexisvn/query-engine": "^0.1.1",
+    "prismjs": "^1.30.0",
+    "sql-formatter": "^15.8.2"
   }
 }
