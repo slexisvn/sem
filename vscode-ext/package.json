@@ -1,0 +1,83 @@
+{
+  "name": "sem-language",
+  "displayName": "Sem",
+  "description": "Language support for the Sem semantic-layer DSL: diagnostics, hover, completion, go-to-definition, and docs.",
+  "version": "0.1.0",
+  "type": "commonjs",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "sem",
+    "semantic layer",
+    "metrics",
+    "sql",
+    "dsl"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "sem",
+        "aliases": ["Sem", "sem"],
+        "extensions": [".sem"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sem",
+        "scopeName": "source.sem",
+        "path": "./syntaxes/sem.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sem.generateDocs",
+        "title": "Generate Metric Docs",
+        "category": "Sem"
+      },
+      {
+        "command": "sem.compileQuery",
+        "title": "Compile Query to SQL",
+        "category": "Sem"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "sem.generateDocs",
+          "when": "editorLangId == sem"
+        },
+        {
+          "command": "sem.compileQuery",
+          "when": "editorLangId == sem"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "sem": "file:.."
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.6.3"
+  }
+}

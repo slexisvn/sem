@@ -1,0 +1,61 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sem",
+  "scopeName": "source.sem",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#aggregates" },
+    { "include": "#transforms" },
+    { "include": "#cardinalities" },
+    { "include": "#durations" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.sem"
+    },
+    "strings": {
+      "name": "string.quoted.single.sem",
+      "begin": "'",
+      "end": "'",
+      "patterns": [{ "match": "''", "name": "constant.character.escape.sem" }]
+    },
+    "keywords": {
+      "match": "\\b(model|table|primary_key|join|on|dimension|measure|metric|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|and|or|not|in|between|like|true|false)\\b",
+      "name": "keyword.control.sem"
+    },
+    "types": {
+      "match": "\\b(string|number|boolean|time)\\b",
+      "name": "storage.type.sem"
+    },
+    "aggregates": {
+      "match": "\\b(sum|count|avg|min|max)\\b(?=\\s*\\()",
+      "name": "support.function.aggregate.sem"
+    },
+    "transforms": {
+      "match": "(?<=\\.)(mom|yoy|rolling|cumulative|share)\\b",
+      "name": "support.function.transform.sem"
+    },
+    "cardinalities": {
+      "match": "\\b(many_to_one|one_to_many|one_to_one|many_to_many)\\b",
+      "name": "constant.language.cardinality.sem"
+    },
+    "durations": {
+      "match": "\\b[0-9]+(d|w|m|q|y)\\b",
+      "name": "constant.numeric.duration.sem"
+    },
+    "numbers": {
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+      "name": "constant.numeric.sem"
+    },
+    "operators": {
+      "match": "==|!=|<=|>=|<|>|=|\\+|-|\\*|/",
+      "name": "keyword.operator.sem"
+    }
+  }
+}

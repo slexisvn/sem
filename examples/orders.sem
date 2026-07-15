@@ -1,0 +1,40 @@
+model Orders {
+  table public.orders
+  primary_key id
+
+  join Customers on customer_id = Customers.id (many_to_one)
+  join Items on id = Items.order_id (one_to_many)
+
+  dimension region: string = region
+  dimension status: string = status
+  dimension ordered_at: time = ordered_at
+
+  measure gross = sum(amount)
+
+  metric revenue     = sum(amount) where status = 'paid'
+  metric refunds     = sum(amount) where status = 'refunded'
+  metric net_revenue = revenue - refunds
+  metric orders      = count(id)
+  metric aov         = revenue / orders
+  metric units       = count(Items.id)
+}
+
+model Customers {
+  table public.customers
+  primary_key id
+
+  dimension country: string = country
+  dimension tier: string = tier
+}
+
+model Items {
+  table public.items
+  primary_key id
+
+  dimension sku: string = sku
+}
+
+policy analyst_vn on Orders restrict region = 'VN'
+
+assert revenue where ordered_at.month = '2026-01' == 1250000
+assert aov where region = 'VN' between 20 and 60
