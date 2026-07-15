@@ -215,8 +215,17 @@ export interface AssertDecl {
   readonly span: Span;
 }
 
+export interface MaterializeDecl {
+  readonly kind: NodeKind.Materialize;
+  readonly name: string;
+  readonly nameSpan: Span;
+  readonly query: QueryDecl;
+  readonly span: Span;
+}
+
 export interface Program {
   readonly models: ModelDecl[];
   readonly policies: PolicyDecl[];
   readonly asserts: AssertDecl[];
+  readonly materializes: MaterializeDecl[];
 }

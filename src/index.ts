@@ -21,10 +21,12 @@ export * from "./analyzer/ir.js";
 export type { SqlDialect } from "./codegen/dialect.js";
 export { PostgresDialect, postgres } from "./codegen/postgres.js";
 export { BigQueryDialect, bigquery } from "./codegen/bigquery.js";
+export { MySqlDialect, mysql } from "./codegen/mysql.js";
 export { Generator, generate } from "./codegen/codegen.js";
 export { compileAssert, compileAsserts } from "./tools/assertions.js";
 export type { CompiledAssert } from "./tools/assertions.js";
-export { materialize } from "./tools/materialize.js";
+export { materialize, materializeDecl } from "./tools/materialize.js";
+export type { MaterializeOptions } from "./tools/materialize.js";
 export { generateDocs, SymbolService } from "./tools/symbols.js";
 export type { Symbol as SemSymbol, SymbolKind } from "./tools/symbols.js";
 

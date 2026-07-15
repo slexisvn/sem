@@ -11,6 +11,7 @@ import {
   InExpr,
   JoinDecl,
   LiteralExpr,
+  MaterializeDecl,
   MeasureDecl,
   MemberExpr,
   MetricDecl,
@@ -118,6 +119,7 @@ export class Parser {
     const models: ModelDecl[] = [];
     const policies: PolicyDecl[] = [];
     const asserts: AssertDecl[] = [];
+    const materializes: MaterializeDecl[] = [];
     while (!this.at(TokKind.Eof)) {
       switch (this.peek().kind) {
         case TokKind.Model:
@@ -129,22 +131,29 @@ export class Parser {
         case TokKind.Assert:
           asserts.push(this.parseAssert());
           break;
+        case TokKind.Materialize:
+          materializes.push(this.parseMaterialize());
+          break;
         default: {
           const token = this.peek();
           throw new SemError(
             DiagCode.ParseError,
-            `expected 'model', 'policy', or 'assert' but found '${token.text || token.kind}'`,
+            `expected 'model', 'policy', 'assert', or 'materialize' but found '${token.text || token.kind}'`,
             token.span
           );
         }
       }
     }
-    return { models, policies, asserts };
+    return { models, policies, asserts, materializes };
   }
 
   public parseQuery(): QueryDecl {
     const start = this.peek().span;
     this.expect(TokKind.Show, "'show'");
+    return this.parseQueryAfterShow(start, true);
+  }
+
+  private parseQueryAfterShow(start: Span, expectEof: boolean): QueryDecl {
     const metrics = this.parseMetricSelectList();
 
     const dimensions: RefExpr[] = [];
@@ -188,7 +197,7 @@ export class Parser {
       top = token.value as number;
     }
 
-    this.expect(TokKind.Eof, "end of query");
+    if (expectEof) this.expect(TokKind.Eof, "end of query");
     return {
       kind: NodeKind.Query,
       metrics,
@@ -506,6 +515,23 @@ export class Parser {
     }
     const token = this.peek();
     throw new SemError(DiagCode.ParseError, `expected '==' or 'between' in assert but found '${token.text}'`, token.span);
+  }
+
+  private parseMaterialize(): MaterializeDecl {
+    const start = this.peek().span;
+    this.expect(TokKind.Materialize, "'materialize'");
+    const nameTok = this.expect(TokKind.Ident, "a materialized view name");
+    this.expect(TokKind.As, "'as'");
+    // The embedded query owns the rest of the declaration: materialize name as show ...
+    const show = this.expect(TokKind.Show, "'show'");
+    const query = this.parseQueryAfterShow(show.span, true);
+    return {
+      kind: NodeKind.Materialize,
+      name: nameTok.text,
+      nameSpan: nameTok.span,
+      query,
+      span: this.spanFrom(start)
+    };
   }
 
   private parseSignedNumber(): number {

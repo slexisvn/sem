@@ -10,6 +10,7 @@ export interface Symbol {
   readonly kind: SymbolKind;
   readonly model?: string;
   readonly detail: string;
+  readonly documentation: string;
   readonly span: Span;
 }
 
@@ -28,35 +29,75 @@ export class SymbolService {
         qualifiedName: model.name,
         kind: "model",
         detail: `model ${model.name} (${model.table})`,
+        documentation: [
+          `**Model** \`${model.name}\``,
+          "",
+          `- Table: \`${model.table}\``,
+          `- Primary key: \`${model.primaryKey}\``,
+          `- Dimensions: ${model.dims.size}`,
+          `- Measures: ${model.measures.size}`,
+          `- Metrics: ${model.metrics.size}`
+        ].join("\n"),
         span: model.span
       });
       for (const dim of model.dims.values()) {
+        const expr = printExpr(dim.expr);
         out.push({
           name: dim.name,
           qualifiedName: `${model.name}.${dim.name}`,
           kind: "dimension",
           model: model.name,
-          detail: `dimension ${dim.name}: ${dim.type} = ${printExpr(dim.expr)}`,
+          detail: `dimension ${dim.name}: ${dim.type} = ${expr}`,
+          documentation: [
+            `**Dimension** \`${model.name}.${dim.name}\``,
+            "",
+            `- Type: \`${dim.type}\``,
+            `- Model: \`${model.name}\``,
+            "",
+            "```sem",
+            `dimension ${dim.name}: ${dim.type} = ${expr}`,
+            "```"
+          ].join("\n"),
           span: dim.span
         });
       }
       for (const measure of model.measures.values()) {
+        const expr = printExpr(measure.expr);
         out.push({
           name: measure.name,
           qualifiedName: `${model.name}.${measure.name}`,
           kind: "measure",
           model: model.name,
-          detail: `measure ${measure.name} = ${printExpr(measure.expr)}`,
+          detail: `measure ${measure.name} = ${expr}`,
+          documentation: [
+            `**Measure** \`${model.name}.${measure.name}\``,
+            "",
+            `- Model: \`${model.name}\``,
+            "",
+            "```sem",
+            `measure ${measure.name} = ${expr}`,
+            "```"
+          ].join("\n"),
           span: measure.span
         });
       }
       for (const metric of model.metrics.values()) {
+        const detail = this.metricDetail(model, metric.name);
         out.push({
           name: metric.name,
           qualifiedName: `${model.name}.${metric.name}`,
           kind: "metric",
           model: model.name,
-          detail: this.metricDetail(model, metric.name),
+          detail,
+          documentation: [
+            `**Metric** \`${model.name}.${metric.name}\``,
+            "",
+            `- Model: \`${model.name}\``,
+            "",
+            "```sem",
+            detail,
+            "```"
+          ].join("\n"),
           span: metric.span
         });
       }
@@ -69,7 +110,7 @@ export class SymbolService {
   }
 
   public hover(name: string): string | undefined {
-    return this.definitionOf(name)?.detail;
+    return this.definitionOf(name)?.documentation;
   }
 
   public completions(prefix: string): string[] {

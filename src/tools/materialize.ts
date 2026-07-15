@@ -1,5 +1,6 @@
 import { analyze, AnalyzeOptions } from "../analyzer/analyzer.js";
 import { Catalog } from "../analyzer/catalog.js";
+import { MaterializeDecl, QueryDecl } from "../ast/nodes.js";
 import { generate } from "../codegen/codegen.js";
 import { SqlDialect } from "../codegen/dialect.js";
 import { postgres } from "../codegen/postgres.js";
@@ -15,8 +16,25 @@ export function materialize(
   querySource: string,
   options: MaterializeOptions = {}
 ): string {
+  return materializeQuery(catalog, name, parseQuery(querySource), options);
+}
+
+export function materializeDecl(
+  catalog: Catalog,
+  decl: MaterializeDecl,
+  options: MaterializeOptions = {}
+): string {
+  return materializeQuery(catalog, decl.name, decl.query, options);
+}
+
+function materializeQuery(
+  catalog: Catalog,
+  name: string,
+  query: QueryDecl,
+  options: MaterializeOptions
+): string {
   const dialect = options.dialect ?? postgres;
-  const plan = analyze(catalog, parseQuery(querySource), options);
+  const plan = analyze(catalog, query, options);
   const { sql, params } = generate(catalog, plan, dialect);
   const body = inlineParams(sql.replace(/;\s*$/, ""), params);
   return `CREATE MATERIALIZED VIEW ${dialect.ident(name)} AS\n${body};`;

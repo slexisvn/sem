@@ -3,8 +3,9 @@
   "displayName": "Sem",
   "description": "Language support for the Sem semantic-layer DSL: diagnostics, hover, completion, go-to-definition, and docs.",
   "version": "0.1.0",
+  "publisher": "slexisvn",
   "type": "commonjs",
-  "icon": "icon.png",
+  "icon": "assets/icon.png",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -20,7 +21,9 @@
     "sql",
     "dsl"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:sem"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
@@ -30,8 +33,8 @@
         "extensions": [".sem"],
         "configuration": "./language-configuration.json",
         "icon": {
-          "light": "./icon.png",
-          "dark": "./icon.png"
+          "light": "./assets/file-icon-light.svg",
+          "dark": "./assets/file-icon-dark.svg"
         }
       }
     ],
@@ -69,11 +72,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile"
-  },
-  "dependencies": {
-    "sem": "file:.."
+    "prepare-runtime": "node scripts/prepare-runtime.cjs",
+    "vscode:prepublish": "npm --prefix .. run build && npm run compile && npm run prepare-runtime",
+    "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

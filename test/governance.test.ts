@@ -5,6 +5,7 @@ import {
   compileWithCatalog,
   generateDocs,
   materialize,
+  materializeDecl,
   parseProgram,
   SymbolService
 } from "../src/index.js";
@@ -62,6 +63,17 @@ describe("phase 3 · materialization", () => {
     expect(ddl).not.toContain("$1");
     expect(ddl.trimEnd().endsWith(";")).toBe(true);
   });
+
+  test("parses and compiles a top-level materialize declaration", () => {
+    const source = `${GOVERNED}\nmaterialize revenue_by_region as show revenue by region where status = 'paid'`;
+    const program = parseProgram(source);
+    const catalog = catalogFromSource(source);
+    expect(program.materializes).toHaveLength(1);
+    const ddl = materializeDecl(catalog, program.materializes[0]!, { policies: [] });
+    expect(ddl).toContain("CREATE MATERIALIZED VIEW revenue_by_region AS");
+    expect(ddl).toContain("orders.status = 'paid'");
+    expect(ddl).toContain("GROUP BY orders.region");
+  });
 });
 
 describe("phase 3 · docs & symbols", () => {
@@ -78,6 +90,8 @@ describe("phase 3 · docs & symbols", () => {
     const symbols = new SymbolService(catalog);
     expect(symbols.definitionOf("revenue")?.kind).toBe("metric");
     expect(symbols.hover("units")).toContain("count(Items.id)");
+    expect(symbols.hover("revenue")).toContain("**Metric** `Orders.revenue`");
+    expect(symbols.hover("region")).toContain("**Dimension** `Orders.region`");
     expect(symbols.completions("re")).toContain("revenue");
   });
 });

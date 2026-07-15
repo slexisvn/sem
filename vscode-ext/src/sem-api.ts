@@ -16,6 +16,7 @@ export interface SemSymbol {
   readonly kind: SemSymbolKind;
   readonly model?: string;
   readonly detail: string;
+  readonly documentation?: string;
   readonly span: SemSpan;
 }
 
@@ -50,5 +51,6 @@ export interface SemApi {
 }
 
 export async function loadSem(): Promise<SemApi> {
-  return (await import("sem")) as unknown as SemApi;
+  const semModulePath = "./sem/index.js";
+  return (await import(semModulePath)) as unknown as SemApi;
 }
