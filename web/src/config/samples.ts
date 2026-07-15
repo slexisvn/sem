@@ -13,7 +13,7 @@ export const DEFAULT_SCHEMA = `model Orders {
   metric revenue = gross where status = 'paid'
   metric refunds = gross where status = 'refunded'
   metric net     = revenue - refunds
-  metric orders  = order_count
+  metric orders  = order_count where status = 'paid'
   metric aov     = revenue / orders
   metric buyers  = buyer_count
 }`;
