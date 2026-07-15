@@ -7,6 +7,7 @@ interface SqlPanelProps {
   compiled: CompiledSql | null;
   onCompile: () => void;
   busy: boolean;
+  height?: number;
 }
 
 function render(compiled: CompiledSql): string {
@@ -14,10 +15,12 @@ function render(compiled: CompiledSql): string {
   return compiled.sql + params;
 }
 
-export function SqlPanel({ compiled, onCompile, busy }: SqlPanelProps) {
+export function SqlPanel({ compiled, onCompile, busy, height }: SqlPanelProps) {
   return (
     <Panel
       title={LABELS.sql}
+      className="sqlPanel"
+      style={height ? { height } : undefined}
       actions={
         <button className="btn" onClick={onCompile} disabled={busy}>
           {LABELS.compile}

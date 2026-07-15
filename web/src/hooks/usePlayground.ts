@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useReducer } from "react";
 import type { CompiledSql, DataTable, ResultSet, Status } from "../domain/types.js";
 import { LABELS } from "../config/constants.js";
-import { DEFAULT_QUERY, DEFAULT_SCHEMA, SAMPLE_DATASET } from "../config/samples.js";
+import { DEFAULT_QUERY, DEFAULT_SCHEMA, SAMPLE_DATASETS } from "../config/samples.js";
 import { createServices, resolveDataSource, type Services } from "../services/index.js";
 import { parseCsvText } from "../services/csv.js";
 
@@ -103,12 +103,15 @@ export function usePlayground(services: Services = createServices()) {
   const removeTable = useCallback((name: string) => dispatch({ type: "removeTable", name }), []);
 
   const loadSample = useCallback(() => {
-    const table = parseCsvText(
-      SAMPLE_DATASET.fileName.replace(/\.[^.]+$/, ""),
-      SAMPLE_DATASET.content
+    const tables = SAMPLE_DATASETS.map((dataset) =>
+      parseCsvText(dataset.fileName.replace(/\.[^.]+$/, ""), dataset.content)
     );
-    dispatch({ type: "tables", value: [table] });
-    setStatus({ kind: "success", message: `Loaded sample "${table.name}".` });
+    dispatch({ type: "tables", value: tables });
+    const total = tables.reduce((sum, table) => sum + table.rows.length, 0);
+    setStatus({
+      kind: "success",
+      message: `Loaded ${tables.length} sample table(s), ${LABELS.rowUnit(total)}.`,
+    });
   }, [setStatus]);
 
   const compile = useCallback(() => {

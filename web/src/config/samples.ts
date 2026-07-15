@@ -2,6 +2,8 @@ export const DEFAULT_SCHEMA = `model Orders {
   table orders
   primary_key id
 
+  join Customers on customer_id = Customers.id (many_to_one)
+
   dimension region: string
   dimension status: string
   dimension ordered_at: time
@@ -16,13 +18,22 @@ export const DEFAULT_SCHEMA = `model Orders {
   metric orders  = order_count where status = 'paid'
   metric aov     = revenue / orders
   metric buyers  = buyer_count
+}
+
+model Customers {
+  table customers
+  primary_key id
+
+  dimension country: string
+  dimension tier: string
 }`;
 
-export const DEFAULT_QUERY = `show revenue, orders, aov, buyers by region`;
+export const DEFAULT_QUERY = `show revenue, orders, aov, buyers by Customers.tier`;
 
-export const SAMPLE_DATASET = {
-  fileName: "orders.csv",
-  content: `id,customer_id,region,status,amount,ordered_at
+export const SAMPLE_DATASETS = [
+  {
+    fileName: "orders.csv",
+    content: `id,customer_id,region,status,amount,ordered_at
 1,10,VN,paid,120.00,2026-01-05
 2,10,VN,refunded,40.00,2026-01-11
 3,11,US,paid,260.00,2026-01-14
@@ -31,4 +42,13 @@ export const SAMPLE_DATASET = {
 6,13,EU,paid,310.00,2026-02-20
 7,12,EU,refunded,75.00,2026-03-01
 8,10,VN,paid,145.00,2026-03-18`,
-} as const;
+  },
+  {
+    fileName: "customers.csv",
+    content: `id,country,tier
+10,VN,enterprise
+11,US,enterprise
+12,US,self_serve
+13,DE,self_serve`,
+  },
+] as const;
