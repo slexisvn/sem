@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { compile, DiagCode, mysql, SemError } from "../src/index.js";
+import { bigquery, compile, DiagCode, mysql, SemError } from "../src/index.js";
 
 const MODEL = `model Events { table public.events primary_key id dimension event: string }`;
 
@@ -73,10 +73,30 @@ describe("retention rejects malformed declarations", () => {
   });
 });
 
-describe("retention degrades safely without a period-difference primitive", () => {
-  test("mysql reports the feature as unsupported instead of emitting wrong SQL", () => {
-    expect(codeOf(() => compile(MODEL, "retention Events by user_id over occurred_at.month periods 3", { dialect: mysql }))).toBe(
-      DiagCode.Unsupported
-    );
+describe("retention runs on every dialect, each with its own period-difference primitive", () => {
+  const query = "retention Events by user_id over occurred_at.month periods 3";
+
+  test("mysql measures the offset with TIMESTAMPDIFF, counting from the cohort", () => {
+    expect(compile(MODEL, query, { dialect: mysql }).sql).toContain("TIMESTAMPDIFF(MONTH, c.__c, e.__p) AS __k");
+  });
+
+  test("bigquery measures the offset with DATE_DIFF, counting from the cohort", () => {
+    expect(compile(MODEL, query, { dialect: bigquery }).sql).toContain("DATE_DIFF(DATE(e.__p), DATE(c.__c), MONTH) AS __k");
+  });
+
+  test("every dialect keeps the same cohort matrix shape", () => {
+    for (const dialect of [mysql, bigquery]) {
+      const { sql } = compile(MODEL, query, { dialect });
+      expect(sql).toContain("WITH cohort_events AS (");
+      expect(sql).toContain("COUNT(DISTINCT CASE WHEN __k = 3 THEN __e END)");
+      expect(sql).toContain("GROUP BY cohort");
+    }
+  });
+
+  test("each grain maps to that dialect's own unit", () => {
+    const day = compile(MODEL, "retention Events by user_id over occurred_at.day periods 1", { dialect: mysql }).sql;
+    expect(day).toContain("TIMESTAMPDIFF(DAY, c.__c, e.__p)");
+    const week = compile(MODEL, "retention Events by user_id over occurred_at.week periods 1", { dialect: bigquery }).sql;
+    expect(week).toContain("DATE_DIFF(DATE(e.__p), DATE(c.__c), WEEK)");
   });
 });

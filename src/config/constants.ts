@@ -7,7 +7,9 @@ export enum AggFunc {
   Min = "min",
   Max = "max",
   Median = "median",
-  Percentile = "percentile"
+  Percentile = "percentile",
+  ApproxMedian = "approx_median",
+  ApproxPercentile = "approx_percentile"
 }
 
 export enum TimeGrain {

@@ -11,6 +11,7 @@ interface AggSemantics {
   readonly reagg: ReAgg;
   readonly allowsDistinct: boolean;
   readonly quantile?: number | null;
+  readonly approx?: boolean;
 }
 
 const AGG_SEMANTICS: ReadonlyMap<AggFunc, AggSemantics> = new Map([
@@ -20,7 +21,9 @@ const AGG_SEMANTICS: ReadonlyMap<AggFunc, AggSemantics> = new Map([
   [AggFunc.Min, { reagg: ReAgg.Min, allowsDistinct: false }],
   [AggFunc.Max, { reagg: ReAgg.Max, allowsDistinct: false }],
   [AggFunc.Median, { reagg: ReAgg.None, allowsDistinct: false, quantile: 0.5 }],
-  [AggFunc.Percentile, { reagg: ReAgg.None, allowsDistinct: false, quantile: null }]
+  [AggFunc.Percentile, { reagg: ReAgg.None, allowsDistinct: false, quantile: null }],
+  [AggFunc.ApproxMedian, { reagg: ReAgg.None, allowsDistinct: false, quantile: 0.5, approx: true }],
+  [AggFunc.ApproxPercentile, { reagg: ReAgg.None, allowsDistinct: false, quantile: null, approx: true }]
 ]);
 
 export const REAGG_SQL: ReadonlyMap<ReAgg, string> = new Map([
@@ -45,4 +48,8 @@ export function aggQuantile(func: AggFunc): number | null | undefined {
 
 export function aggTakesParameter(func: AggFunc): boolean {
   return AGG_SEMANTICS.get(func)!.quantile === null;
+}
+
+export function aggIsApprox(func: AggFunc): boolean {
+  return AGG_SEMANTICS.get(func)!.approx === true;
 }

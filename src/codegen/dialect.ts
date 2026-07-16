@@ -9,8 +9,14 @@ export interface SqlDialect {
   limit(n: number): string;
   periodSeries?(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string;
   orderedQuantile?(argSql: string, fraction: number): string;
+  approxQuantile?(argSql: string, fraction: number): string;
   asOfLateral?(table: string, alias: string, keyPred: string, tsPred: string, order: string): string;
   periodDiff?(grain: TimeGrain, later: string, earlier: string): string;
+}
+
+export function lateralAsOf(table: string, alias: string, keyPred: string, tsPred: string, order: string): string {
+  const inner = `SELECT * FROM ${table} AS ${alias} WHERE ${keyPred} AND ${tsPred} ORDER BY ${order} LIMIT 1`;
+  return `LEFT JOIN LATERAL (${inner}) AS ${alias} ON TRUE`;
 }
 
 const SIMPLE_IDENT = /^[a-z_][a-z0-9_]*$/;

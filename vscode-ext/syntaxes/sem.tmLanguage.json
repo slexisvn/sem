@@ -5,6 +5,7 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
+    { "include": "#measureUnit" },
     { "include": "#keywords" },
     { "include": "#modifiers" },
     { "include": "#types" },
@@ -19,6 +20,18 @@
     "comments": {
       "match": "#.*$",
       "name": "comment.line.number-sign.sem"
+    },
+    "measureUnit": {
+      "begin": "\\b(measure)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.sem" },
+        "3": { "name": "punctuation.separator.type.sem" }
+      },
+      "end": "(?==)|(?=\\b(?:semi_additive|non_additive)\\b)|$",
+      "patterns": [
+        { "match": "[A-Za-z_][A-Za-z0-9_]*", "name": "storage.type.unit.sem" },
+        { "match": "[*/]", "name": "keyword.operator.sem" }
+      ]
     },
     "strings": {
       "name": "string.quoted.single.sem",
@@ -39,7 +52,7 @@
       "name": "storage.type.sem"
     },
     "aggregates": {
-      "match": "\\b(sum|count|avg|min|max|median|percentile)\\b(?=\\s*\\()",
+      "match": "\\b(sum|count|avg|min|max|median|percentile|approx_median|approx_percentile)\\b(?=\\s*\\()",
       "name": "support.function.aggregate.sem"
     },
     "transforms": {

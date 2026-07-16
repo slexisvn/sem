@@ -189,15 +189,25 @@ dimension ordered_at: time`}</Code>
             A <code>measure</code> is a raw aggregate over one model. It is the building block metrics
             are made of. Supported aggregate functions: <code>sum</code>, <code>count</code>,{" "}
             <code>avg</code>, <code>min</code>, <code>max</code>, <code>median</code>,{" "}
-            <code>percentile(col, p)</code>, plus <code>count(distinct …)</code>.
+            <code>percentile(col, p)</code>, their <code>approx_</code> variants, plus{" "}
+            <code>count(distinct …)</code>.
           </p>
           <Code>{`measure gross       = sum(amount)
 measure order_count = count(id)
 measure buyer_count = count(distinct customer_id)
 measure amount_max  = max(amount)
-measure latency_p95 = percentile(latency, 95)`}</Code>
+measure latency_p95 = percentile(latency, 95)
+measure latency_est = approx_percentile(latency, 95)`}</Code>
           <p className="docs__note">
             Measures are usually not queried directly — you expose them to consumers as metrics.
+          </p>
+          <p>
+            <strong>Exact vs. approximate.</strong> Not every engine can compute an exact quantile.
+            sem will not quietly swap in an estimator: <code>percentile</code> is refused where it
+            can't be answered exactly. Writing <code>approx_percentile</code> is how you say an
+            estimate is acceptable — and the name stays in the metric definition, so nobody reading
+            the number later has to guess. On an engine that has the exact function, an{" "}
+            <code>approx_</code> measure is simply answered exactly.
           </p>
         </Section>
 
@@ -422,6 +432,25 @@ assert aov where region = 'VN' between 20 and 60`}</Code>
 const sql = compile(schemaSource, "show revenue by region", {
   dialect: bigquery,
 }).sql;`}</Code>
+          <p>
+            A few features need a primitive the engine may not have. sem never emulates one with a
+            different answer — if the target can't express it exactly, the query is rejected with an{" "}
+            <code>unsupported</code> error instead.
+          </p>
+          <table className="docs__table">
+            <thead>
+              <tr><th>Feature</th><th>Postgres</th><th>BigQuery</th><th>MySQL</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Models, metrics, filters, joins, fan-out dedup</td><td>✅</td><td>✅</td><td>✅</td></tr>
+              <tr><td>Funnels</td><td>✅</td><td>✅</td><td>✅</td></tr>
+              <tr><td>Retention</td><td>✅</td><td>✅</td><td>✅</td></tr>
+              <tr><td>Dense date spine (gap-correct windows)</td><td>✅</td><td>✅</td><td>— falls back to a positional grid</td></tr>
+              <tr><td>As-of joins</td><td>✅</td><td>❌ no lateral join</td><td>✅ 8.0.14+</td></tr>
+              <tr><td>Exact quantiles (<code>median</code>, <code>percentile</code>)</td><td>✅</td><td>❌ estimator only</td><td>❌</td></tr>
+              <tr><td>Approximate quantiles (<code>approx_median</code>, <code>approx_percentile</code>)</td><td>✅ answered exactly</td><td>✅</td><td>❌</td></tr>
+            </tbody>
+          </table>
         </Section>
 
         <Section id="reference" title="Grammar reference">
@@ -457,6 +486,7 @@ funnel <Model> by <entity> over <time>
 retention <Model> by <entity> over <time>.<grain> periods <n>
 
 # aggregates    sum count avg min max median percentile(col,p)  (+ count(distinct ..))
+#               approx_median approx_percentile(col,p)
 # units         money count time <name>  combined with * and /
 # additivity    non_additive | semi_additive(last|first by <dim>)
 # cardinalities many_to_one one_to_many one_to_one many_to_many

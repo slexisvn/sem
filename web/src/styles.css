@@ -422,6 +422,7 @@ body {
 }
 
 .token.type,
+.token.unit,
 .token.cardinality {
   color: #4ec9b0;
 }

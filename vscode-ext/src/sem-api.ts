@@ -8,7 +8,7 @@ export interface SemSpan {
   readonly end: SemPos;
 }
 
-export type SemSymbolKind = "model" | "dimension" | "measure" | "metric";
+export type SemSymbolKind = "model" | "dimension" | "measure" | "metric" | "segment";
 
 export interface SemSymbol {
   readonly name: string;

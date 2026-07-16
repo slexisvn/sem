@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { compile, DiagCode, mysql, SemError } from "../src/index.js";
+import { bigquery, compile, DiagCode, mysql, SemError } from "../src/index.js";
 
 const MODEL = (join: string): string => `
 model Orders {
@@ -77,8 +77,14 @@ describe("asof join rejects malformed declarations", () => {
   });
 });
 
-describe("asof join degrades safely on dialects without lateral joins", () => {
-  test("mysql reports the feature as unsupported instead of emitting wrong SQL", () => {
-    expect(codeOf(() => compile(LATEST, "show revenue by Rates.tier", { dialect: mysql }))).toBe(DiagCode.Unsupported);
+describe("asof join works on every dialect with lateral joins", () => {
+  test("mysql emits the same lateral shape as postgres", () => {
+    const { sql } = compile(LATEST, "show revenue by Rates.tier", { dialect: mysql });
+    expect(sql).toContain("LEFT JOIN LATERAL (SELECT * FROM public.fx_rates AS rates");
+    expect(sql).toContain("ORDER BY rates.as_of DESC LIMIT 1) AS rates ON TRUE");
+  });
+
+  test("bigquery has no lateral join, so it reports the query as unsupported rather than guessing", () => {
+    expect(codeOf(() => compile(LATEST, "show revenue by Rates.tier", { dialect: bigquery }))).toBe(DiagCode.Unsupported);
   });
 });

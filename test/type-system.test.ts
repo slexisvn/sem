@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { compile, DiagCode, mysql, SemError } from "../src/index.js";
+import { bigquery, compile, DiagCode, mysql, SemError } from "../src/index.js";
 
 const UNITS = `
 model Sales {
@@ -232,9 +232,13 @@ model Api {
   dimension ts: time
   measure med : time = median(latency)
   measure p95 : time = percentile(latency, 95)
+  measure amed: time = approx_median(latency)
+  measure ap95: time = approx_percentile(latency, 95)
   measure hits: count = count(id)
   metric latency_med = med
   metric latency_p95 = p95
+  metric approx_med  = amed
+  metric approx_p95  = ap95
   metric requests = hits
 }`;
 
@@ -268,6 +272,36 @@ model Api {
 
   test("a dialect without ordered quantiles reports it instead of guessing", () => {
     expect(codeOf(() => compile(LAT, "show latency_med by route", { dialect: mysql }).sql)).toBe(DiagCode.Unsupported);
+  });
+
+  describe("approximation is opted into by name, never substituted silently", () => {
+  test("an exact quantile is refused on a dialect that only has an estimator", () => {
+    expect(codeOf(() => compile(LAT, "show latency_p95 by route", { dialect: bigquery }).sql)).toBe(DiagCode.Unsupported);
+  });
+
+  test("asking for approx_percentile lets that dialect use its estimator", () => {
+    expect(compile(LAT, "show approx_p95 by route", { dialect: bigquery }).sql).toContain(
+      "APPROX_QUANTILES(api.latency, 100)[OFFSET(95)]"
+    );
+  });
+
+  test("approx_median maps to the midpoint of the estimator", () => {
+    expect(compile(LAT, "show approx_med by route", { dialect: bigquery }).sql).toContain(
+      "APPROX_QUANTILES(api.latency, 100)[OFFSET(50)]"
+    );
+  });
+
+  test("a dialect with an exact quantile answers an approx request exactly", () => {
+    expect(sql(LAT, "show approx_p95 by route")).toContain("PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY api.latency)");
+  });
+
+  test("a dialect with neither primitive still refuses rather than guessing", () => {
+    expect(codeOf(() => compile(LAT, "show approx_p95 by route", { dialect: mysql }).sql)).toBe(DiagCode.Unsupported);
+  });
+
+    test("approx quantiles stay non-additive", () => {
+      expect(codeOf(() => sql(LAT, "show approx_p95.rolling(7d) by ts.day"))).toBe(DiagCode.NonAdditive);
+    });
   });
 });
 

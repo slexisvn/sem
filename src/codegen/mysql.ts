@@ -1,5 +1,5 @@
 import { TimeGrain } from "../config/constants.js";
-import { BaseDialect } from "./dialect.js";
+import { BaseDialect, lateralAsOf } from "./dialect.js";
 
 export class MySqlDialect extends BaseDialect {
   public readonly name = "mysql";
@@ -25,6 +25,14 @@ export class MySqlDialect extends BaseDialect {
       case TimeGrain.Year:
         return `DATE_FORMAT(${expr}, '%Y-01-01')`;
     }
+  }
+
+  public asOfLateral(table: string, alias: string, keyPred: string, tsPred: string, order: string): string {
+    return lateralAsOf(table, alias, keyPred, tsPred, order);
+  }
+
+  public periodDiff(grain: TimeGrain, later: string, earlier: string): string {
+    return `TIMESTAMPDIFF(${grain.toUpperCase()}, ${earlier}, ${later})`;
   }
 }
 

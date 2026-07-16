@@ -19,7 +19,10 @@ with suggestions:
 - duplicate names, unknown aggregates, bad cardinalities
 - role violations — a `measure` that isn't a single aggregate over its own columns, or a
   `metric` that calls an aggregate directly instead of building on a measure
-- non-additive transforms — e.g. a rolling window or `share` over an average or a ratio
+- non-additive transforms — e.g. a rolling window, `share`, or `.of` over an average or a ratio
+- unit mismatches — adding `money` to a `count` is rejected, with both units named
+- semi-additive misuse — a `semi_additive` rule on an aggregate that can't support it
+- cyclic segments, and segment names that clash with a dimension
 
 ### Compile a query to SQL
 
@@ -34,11 +37,23 @@ interpolated.
 show revenue, aov by region where region = 'VN' order by revenue desc top 5
 ```
 
+The same command also compiles the two sequence-analytics forms:
+
+```sem
+funnel Events by user_id over occurred_at
+  steps viewed = name = 'view', purchased = name = 'purchase'
+
+retention Events by user_id over occurred_at.week periods 8
+```
+
 ### Navigation & IntelliSense
 
-- **Hover** a metric, measure, dimension, or model to see its definition.
+- **Hover** a metric, measure, dimension, segment, or model to see its definition — measures show
+  their unit and additivity. Hovering a keyword, aggregate, or transform (`semi_additive`,
+  `percentile`, `.of`, `.ytd`, …) explains what it does, what it requires, and shows an example.
 - **Go to Definition** (`F12`) jumps to where a symbol is declared.
-- **Completion** suggests metric / dimension / measure / model names from the current model.
+- **Completion** suggests metric / dimension / measure / segment / model names from the current
+  model, plus context-aware keywords and snippets.
 - **Outline** lists every model and its members.
 
 ### Metric documentation
@@ -48,8 +63,9 @@ measures, and metric formulas — as a Markdown document.
 
 ### Syntax highlighting
 
-Keywords, aggregates, the `distinct` modifier, metric transforms (`.mom`, `.rolling(30d)`, `.share`),
-join cardinalities, string literals, durations, and comments.
+Keywords, aggregates (including `median` / `percentile`), the `distinct` modifier, additivity
+modifiers (`semi_additive`, `non_additive`), metric transforms (`.mom`, `.rolling(30d)`, `.share`,
+`.of(dims)`, `.mtd` / `.qtd` / `.ytd`), join cardinalities, string literals, durations, and comments.
 
 ## Getting started
 
@@ -75,14 +91,20 @@ model Orders {
   primary_key id
   join Customers on customer_id = Customers.id (many_to_one)
 
+  # match the rate that was in effect when the order was placed
+  join Rates on currency = Rates.currency asof ordered_at >= Rates.as_of (many_to_one)
+
   dimension region: string        # shorthand for `= region`
   dimension ordered_at: time      # a time dimension for grains like ordered_at.month
 
-  measure gross       = sum(amount)              # primitive aggregate
-  measure order_count = count(id)
-  measure buyers      = count(distinct customer_id)
+  segment paid = status = 'paid'                 # a reusable named filter
 
-  metric revenue = gross where status = 'paid'   # simple metric: measure + filter
+  measure gross       : money = sum(amount)      # typed primitive aggregate
+  measure order_count : count = count(id)
+  measure buyers      = count(distinct customer_id)
+  measure p95_amount  = percentile(amount, 95)   # quantile (non-additive)
+
+  metric revenue = gross where paid              # simple metric: measure + segment
   metric orders  = order_count                   # simple metric
   metric aov     = revenue / orders              # ratio metric → NULLIF
 }
@@ -91,7 +113,14 @@ policy analyst_vn on Orders restrict region = 'VN'
 assert revenue where ordered_at.month = '2026-01' == 1250000
 ```
 
-Queries read like English: `show <metrics> [by <dims>] [where …] [having …] [order by … desc] [top n]`.
+Units are opt-in: annotate a measure with `: money` and sem rejects nonsense like `money + count`,
+while unannotated measures keep working unchanged.
+
+Queries read like English:
+
+- `show <metrics> [by <dims>] [where …] [having …] [order by … desc] [top n]`
+- `funnel <Model> by <entity> over <time> steps <name> = <filter>, …`
+- `retention <Model> by <entity> over <time>.<grain> periods <n>`
 
 ## Requirements
 

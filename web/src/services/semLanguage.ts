@@ -7,7 +7,7 @@ const keywordRE =
   /^(?:model|table|primary_key|join|on|asof|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|funnel|steps|over|retention|periods|and|or|not|in|between|like|true|false)\b/;
 const modifierRE = /^(?:distinct|semi_additive|non_additive|last|first)\b/;
 const typeRE = /^(?:string|number|boolean|time)\b/;
-const aggregateRE = /^(?:sum|count|avg|min|max|median|percentile)\b(?=\s*\()/;
+const aggregateRE = /^(?:sum|count|avg|min|max|median|percentile|approx_median|approx_percentile)\b(?=\s*\()/;
 const transformRE = /^(?:mom|yoy|rolling|cumulative|share|of|mtd|qtd|ytd)\b/;
 const cardinalityRE = /^(?:many_to_one|one_to_many|one_to_one|many_to_many)\b/;
 const durationRE = /^\d+(?:d|w|m|q|y)\b/;
@@ -15,8 +15,24 @@ const numberRE = /^\d+(?:\.\d+)?\b/;
 const operatorRE = /^(?:==|!=|<=|>=|<|>|=|\+|-|\*|\/)/;
 const punctuationRE = /^[{}()[\],.:]/;
 
-export const semLanguage = StreamLanguage.define({
-  token(stream) {
+interface SemState {
+  afterMeasure: boolean;
+  inUnit: boolean;
+}
+
+export const semLanguage = StreamLanguage.define<SemState>({
+  tokenTable: {
+    function: tags.function(tags.variableName),
+    constant: tags.atom,
+    modifier: tags.modifier,
+    type: tags.typeName,
+  },
+  startState: () => ({ afterMeasure: false, inUnit: false }),
+  token(stream, state) {
+    if (stream.sol()) {
+      state.afterMeasure = false;
+      state.inUnit = false;
+    }
     if (stream.eatSpace()) return null;
 
     if (stream.match(/#.*/)) return "comment";
@@ -34,8 +50,17 @@ export const semLanguage = StreamLanguage.define({
       return "string";
     }
 
+    if (state.inUnit) {
+      if (stream.peek() === "=" || stream.match(modifierRE, false)) state.inUnit = false;
+      else if (stream.match(/^[*/]/)) return "operator";
+      else if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) return "type";
+    }
+
     if (stream.match(aggregateRE)) return "function";
-    if (stream.match(keywordRE)) return "keyword";
+    if (stream.match(keywordRE)) {
+      state.afterMeasure = stream.current() === "measure";
+      return "keyword";
+    }
     if (stream.match(modifierRE)) return "modifier";
     if (stream.match(typeRE)) return "type";
     if (stream.match(cardinalityRE)) return "constant";
@@ -46,6 +71,13 @@ export const semLanguage = StreamLanguage.define({
     if (stream.peek() === ".") {
       stream.next();
       if (stream.match(transformRE)) return "function";
+      return "punctuation";
+    }
+
+    if (stream.peek() === ":") {
+      stream.next();
+      if (state.afterMeasure) state.inUnit = true;
+      state.afterMeasure = false;
       return "punctuation";
     }
 
@@ -116,7 +148,7 @@ const typeCompletions = ["string", "number", "boolean", "time"].map((label) => (
   type: "type",
 }));
 
-const aggregateCompletions = ["sum", "count", "avg", "min", "max", "median", "percentile"].map((label) => ({
+const aggregateCompletions = ["sum", "count", "avg", "min", "max", "median", "percentile", "approx_median", "approx_percentile"].map((label) => ({
   label,
   type: "function",
   apply: `${label}()`,

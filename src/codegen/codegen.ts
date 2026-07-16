@@ -20,6 +20,7 @@ import {
   ValueRef
 } from "../analyzer/ir.js";
 import {
+  AggFunc,
   ArithOp,
   ASOF_ORDER,
   CmpOp,
@@ -48,7 +49,7 @@ import {
   SPINE_PERIOD_COL,
   TransformKind
 } from "../config/constants.js";
-import { aggQuantile, REAGG_SQL } from "../config/aggregates.js";
+import { aggIsApprox, aggQuantile, REAGG_SQL } from "../config/aggregates.js";
 import { SemiRule } from "../config/additivity.js";
 import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { SqlDialect } from "./dialect.js";
@@ -556,8 +557,7 @@ export class Generator {
   private renderAggregateCall(node: Extract<MExpr, { k: "agg" }>, valueSql: string): string {
     const quantile = aggQuantile(node.func);
     if (quantile !== undefined) {
-      const fraction = quantile ?? node.quantile!;
-      const rendered = this.dialect.orderedQuantile?.(valueSql, fraction);
+      const rendered = this.quantileSql(node.func, valueSql, quantile ?? node.quantile!);
       if (rendered === undefined) {
         throw new SemError(DiagCode.Unsupported, `dialect '${this.dialect.name}' does not support the '${node.func}' aggregate`);
       }
@@ -565,6 +565,11 @@ export class Generator {
     }
     const prefix = node.distinct ? "DISTINCT " : "";
     return `${node.func.toUpperCase()}(${prefix}${valueSql})`;
+  }
+
+  private quantileSql(func: AggFunc, valueSql: string, fraction: number): string | undefined {
+    const exact = this.dialect.orderedQuantile?.(valueSql, fraction);
+    return aggIsApprox(func) ? this.dialect.approxQuantile?.(valueSql, fraction) ?? exact : exact;
   }
 
   private renderMetricCond(cond: MetricCond, params: ParamBag): string {

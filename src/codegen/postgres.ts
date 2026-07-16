@@ -1,5 +1,5 @@
 import { TimeGrain } from "../config/constants.js";
-import { BaseDialect } from "./dialect.js";
+import { BaseDialect, lateralAsOf } from "./dialect.js";
 
 const MONTHS = (later: string, earlier: string): string =>
   `(EXTRACT(YEAR FROM ${later}) - EXTRACT(YEAR FROM ${earlier})) * 12 + (EXTRACT(MONTH FROM ${later}) - EXTRACT(MONTH FROM ${earlier}))`;
@@ -39,8 +39,7 @@ export class PostgresDialect extends BaseDialect {
   }
 
   public asOfLateral(table: string, alias: string, keyPred: string, tsPred: string, order: string): string {
-    const inner = `SELECT * FROM ${table} AS ${alias} WHERE ${keyPred} AND ${tsPred} ORDER BY ${order} LIMIT 1`;
-    return `LEFT JOIN LATERAL (${inner}) AS ${alias} ON TRUE`;
+    return lateralAsOf(table, alias, keyPred, tsPred, order);
   }
 
   public periodDiff(grain: TimeGrain, later: string, earlier: string): string {

@@ -11,11 +11,16 @@ Prism.languages.sem = {
       escape: /''/,
     },
   },
+  unit: {
+    pattern: /(\bmeasure\s+[A-Za-z_]\w*\s*:\s*)[A-Za-z_]\w*(?:\s*[*/]\s*[A-Za-z_]\w*)*/,
+    lookbehind: true,
+    inside: { operator: /[*/]/ },
+  },
   keyword:
     /\b(?:model|table|primary_key|join|on|asof|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|funnel|steps|over|retention|periods|and|or|not|in|between|like|true|false)\b/,
   modifier: /\b(?:distinct|semi_additive|non_additive|last|first)\b/,
   type: /\b(?:string|number|boolean|time)\b/,
-  function: /\b(?:sum|count|avg|min|max|median|percentile)\b(?=\s*\()/,
+  function: /\b(?:sum|count|avg|min|max|median|percentile|approx_median|approx_percentile)\b(?=\s*\()/,
   transform: /(?<=\.)(?:mom|yoy|rolling|cumulative|share|of|mtd|qtd|ytd)\b/,
   cardinality: /\b(?:many_to_one|one_to_many|one_to_one|many_to_many)\b/,
   duration: /\b\d+(?:d|w|m|q|y)\b/,
