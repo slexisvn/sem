@@ -1,8 +1,20 @@
-import { Catalog, ModelInfo } from "../analyzer/catalog.js";
+import { Catalog, MeasureInfo, ModelInfo } from "../analyzer/catalog.js";
 import { printExpr } from "../ast/print.js";
+import { AggOverride } from "../ast/nodes.js";
+import { formatUnit } from "../config/units.js";
 import { Span } from "../lexer/token.js";
 
-export type SymbolKind = "model" | "dimension" | "measure" | "metric";
+export type SymbolKind = "model" | "dimension" | "measure" | "metric" | "segment";
+
+export function measureSignature(measure: MeasureInfo): string {
+  const unit = measure.unit !== undefined ? ` : ${formatUnit(measure.unit)}` : "";
+  const additivity = measure.additivity !== undefined ? ` ${formatAdditivity(measure.additivity)}` : "";
+  return `measure ${measure.name}${unit}${additivity} = ${printExpr(measure.expr)}`;
+}
+
+function formatAdditivity(override: AggOverride): string {
+  return override.kind === "non_additive" ? "non_additive" : `semi_additive(${override.rule} by ${override.dim})`;
+}
 
 export interface Symbol {
   readonly name: string;
@@ -62,20 +74,21 @@ export class SymbolService {
         });
       }
       for (const measure of model.measures.values()) {
-        const expr = printExpr(measure.expr);
+        const detail = measureSignature(measure);
         out.push({
           name: measure.name,
           qualifiedName: `${model.name}.${measure.name}`,
           kind: "measure",
           model: model.name,
-          detail: `measure ${measure.name} = ${expr}`,
+          detail,
           documentation: [
             `**Measure** \`${model.name}.${measure.name}\``,
             "",
             `- Model: \`${model.name}\``,
+            ...(measure.unit !== undefined ? [`- Unit: \`${formatUnit(measure.unit)}\``] : []),
             "",
             "```sem",
-            `measure ${measure.name} = ${expr}`,
+            detail,
             "```"
           ].join("\n"),
           span: measure.span
@@ -99,6 +112,26 @@ export class SymbolService {
             "```"
           ].join("\n"),
           span: metric.span
+        });
+      }
+      for (const segment of model.segments.values()) {
+        const detail = `segment ${segment.name} = ${printExpr(segment.expr)}`;
+        out.push({
+          name: segment.name,
+          qualifiedName: `${model.name}.${segment.name}`,
+          kind: "segment",
+          model: model.name,
+          detail,
+          documentation: [
+            `**Segment** \`${model.name}.${segment.name}\``,
+            "",
+            `- Model: \`${model.name}\``,
+            "",
+            "```sem",
+            detail,
+            "```"
+          ].join("\n"),
+          span: segment.span
         });
       }
     }
@@ -142,7 +175,7 @@ export function generateDocs(catalog: Catalog): string {
       lines.push("");
     }
     docSection(lines, "Dimensions", [...model.dims.values()].map((d) => `\`${d.name}\`: ${d.type}`));
-    docSection(lines, "Measures", [...model.measures.values()].map((m) => `\`${m.name}\` = ${printExpr(m.expr)}`));
+    docSection(lines, "Measures", [...model.measures.values()].map((m) => `\`${measureSignature(m)}\``));
     docSection(
       lines,
       "Metrics",
@@ -151,6 +184,7 @@ export function generateDocs(catalog: Catalog): string {
         return `\`${m.name}\` = ${printExpr(m.expr)}${filter}`;
       })
     );
+    docSection(lines, "Segments", [...model.segments.values()].map((s) => `\`${s.name}\` = ${printExpr(s.expr)}`));
   }
   return lines.join("\n").trimEnd() + "\n";
 }

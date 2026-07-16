@@ -1,4 +1,6 @@
 import { Span } from "../lexer/token.js";
+import { SemiRule } from "../config/additivity.js";
+import { Unit } from "../config/units.js";
 
 export enum NodeKind {
   Model = "Model",
@@ -6,6 +8,7 @@ export enum NodeKind {
   Dimension = "Dimension",
   Measure = "Measure",
   Metric = "Metric",
+  Segment = "Segment",
   Query = "Query",
   Ident = "Ident",
   Member = "Member",
@@ -118,11 +121,17 @@ export interface DimensionDecl {
   readonly span: Span;
 }
 
+export type AggOverride =
+  | { readonly kind: "non_additive"; readonly span: Span }
+  | { readonly kind: "semi"; readonly rule: SemiRule; readonly dim: string; readonly dimSpan: Span; readonly span: Span };
+
 export interface MeasureDecl {
   readonly kind: NodeKind.Measure;
   readonly name: string;
   readonly nameSpan: Span;
   readonly expr: Expr;
+  readonly unit?: Unit;
+  readonly additivity?: AggOverride;
   readonly span: Span;
 }
 
@@ -132,6 +141,14 @@ export interface MetricDecl {
   readonly nameSpan: Span;
   readonly expr: Expr;
   readonly filter?: Expr;
+  readonly span: Span;
+}
+
+export interface SegmentDecl {
+  readonly kind: NodeKind.Segment;
+  readonly name: string;
+  readonly nameSpan: Span;
+  readonly expr: Expr;
   readonly span: Span;
 }
 
@@ -145,6 +162,7 @@ export interface ModelDecl {
   readonly dimensions: DimensionDecl[];
   readonly measures: MeasureDecl[];
   readonly metrics: MetricDecl[];
+  readonly segments: SegmentDecl[];
   readonly span: Span;
 }
 

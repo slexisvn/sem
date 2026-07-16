@@ -14,8 +14,11 @@ model Orders {
   measure buyer_count = count(distinct customer_id)
   measure amount_max  = max(amount)
 
-  metric revenue     = gross where status = 'paid'
-  metric refunds     = gross where status = 'refunded'
+  segment paid     = status = 'paid'
+  segment refunded = status = 'refunded'
+
+  metric revenue     = gross where paid
+  metric refunds     = gross where refunded
   metric net_revenue = revenue - refunds
   metric orders      = order_count
   metric aov         = revenue / orders

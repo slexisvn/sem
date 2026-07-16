@@ -5,7 +5,9 @@ export enum AggFunc {
   Count = "count",
   Avg = "avg",
   Min = "min",
-  Max = "max"
+  Max = "max",
+  Median = "median",
+  Percentile = "percentile"
 }
 
 export enum TimeGrain {
@@ -56,10 +58,19 @@ export enum TransformKind {
   Yoy = "yoy",
   Rolling = "rolling",
   Cumulative = "cumulative",
-  Share = "share"
+  Share = "share",
+  Mtd = "mtd",
+  Qtd = "qtd",
+  Ytd = "ytd"
 }
 
 export const TRANSFORM_NAMES: ReadonlySet<string> = new Set<string>(Object.values(TransformKind));
+
+export const PERIOD_TO_DATE_GRAIN: ReadonlyMap<TransformKind, TimeGrain> = new Map([
+  [TransformKind.Mtd, TimeGrain.Month],
+  [TransformKind.Qtd, TimeGrain.Quarter],
+  [TransformKind.Ytd, TimeGrain.Year]
+]);
 
 export const DURATION_UNIT_DAYS: ReadonlyMap<string, number> = new Map([
   ["d", 1],
@@ -94,6 +105,7 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["dimension", TokKind.Dimension],
   ["measure", TokKind.Measure],
   ["metric", TokKind.Metric],
+  ["segment", TokKind.Segment],
   ["show", TokKind.Show],
   ["by", TokKind.By],
   ["where", TokKind.Where],
@@ -132,6 +144,8 @@ export const CTE_SUFFIX = "_agg";
 export const COMPONENT_PREFIX = "m";
 export const DEDUP_KEY_ALIAS = "__pk";
 export const DEDUP_VALUE_PREFIX = "__v";
+export const SEMI_ORDER_PREFIX = "__o";
+export const SEMI_WINDOW_PREFIX = "__w";
 export const GRID_CTE = "grid";
 export const SPINE_CTE = "spine";
 export const DENSE_CTE = "dense";

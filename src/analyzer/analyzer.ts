@@ -1,4 +1,5 @@
 import {
+  AggOverride,
   BetweenExpr,
   BinaryExpr,
   BinaryOp,
@@ -23,27 +24,31 @@ import {
   FANOUT_CARDINALITIES,
   GRAIN_DAYS,
   GRAIN_PERIODS_PER_YEAR,
+  PERIOD_TO_DATE_GRAIN,
   TIME_GRAINS,
   TimeGrain,
   TransformKind,
   TRANSFORM_NAMES
 } from "../config/constants.js";
-import { aggAllowsDistinct, ReAgg } from "../config/aggregates.js";
+import { aggAllowsDistinct, aggReAgg, aggTakesParameter, ReAgg } from "../config/aggregates.js";
+import { Additivity, fromReAgg, NON_ADDITIVE, windowReduce } from "../config/additivity.js";
+import { Unit } from "../config/units.js";
+import { typeOf } from "./metric-type.js";
 import { closestName, DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
-import { Catalog, DimInfo, JoinInfo, ModelInfo } from "./catalog.js";
+import { Catalog, DimInfo, JoinInfo, MeasureInfo, ModelInfo } from "./catalog.js";
 import {
   ColExpr,
   columnModelOf,
   Cond,
   DimPlan,
   FactPlan,
+  hasSemiAdditive,
   JoinEdge,
   MetricCond,
   MExpr,
   modelSet,
   Plan,
-  reAggOfExpr,
   SelectMetric,
   TransformIR,
   ValueRef
@@ -90,7 +95,10 @@ interface Located {
   readonly model: string;
   readonly name: string;
   readonly expr: Expr;
+  readonly span: Span;
   readonly filter?: Expr;
+  readonly unit?: Unit;
+  readonly additivity?: AggOverride;
 }
 
 interface OperandResult {
@@ -131,6 +139,14 @@ export class Analyzer {
     const dims = query.dimensions.map((ref) => this.resolveDimension(facts, ref));
     const selects = working.map((w) => this.finishSelect(w, dims, strategy));
     const fannedOut = facts.some((fact) => fact.fannedOut === true);
+
+    if (selects.some((s) => hasSemiAdditive(s.expr)) && (strategy !== "single" || windowed || fannedOut)) {
+      throw new SemError(
+        DiagCode.Unsupported,
+        "semi-additive measures are only supported in single-fact, non-windowed queries without a fan-out dimension",
+        query.span
+      );
+    }
 
     for (const fact of facts) {
       fact.filter = this.buildFilter(fact, query.where, options);
@@ -177,13 +193,62 @@ export class Analyzer {
 
   private buildFilter(fact: FactPlan, where: Expr | undefined, options: AnalyzeOptions): Cond | undefined {
     const parts: Cond[] = [];
+    const resolver = this.dimResolver(fact);
     for (const policy of this.catalog.policiesFor(fact.model)) {
       if (options.policies !== undefined && !options.policies.includes(policy.name)) continue;
-      parts.push(this.resolveCond(policy.restrict, this.dimResolver(fact)));
+      parts.push(this.resolveCond(this.expandSegments(fact.model, policy.restrict, new Set()), resolver));
     }
-    if (where !== undefined) parts.push(this.resolveCond(where, this.dimResolver(fact)));
+    if (where !== undefined) parts.push(this.resolveCond(this.expandSegments(fact.model, where, new Set()), resolver));
     if (parts.length === 0) return undefined;
     return parts.reduce((left, right) => ({ k: "and", left, right }));
+  }
+
+  private expandSegments(model: string, expr: Expr, visiting: Set<string>): Expr {
+    switch (expr.kind) {
+      case NodeKind.Ident: {
+        const segment = this.catalog.models.get(model)?.segments.get(expr.name);
+        return segment === undefined ? expr : this.expandSegmentBody(model, expr.name, segment.expr, expr.span, visiting);
+      }
+      case NodeKind.Member: {
+        if (expr.object.kind === NodeKind.Ident && this.catalog.hasModel(expr.object.name)) {
+          const segment = this.catalog.models.get(expr.object.name)?.segments.get(expr.name);
+          if (segment !== undefined) {
+            return this.expandSegmentBody(expr.object.name, expr.name, segment.expr, expr.span, visiting);
+          }
+        }
+        return expr;
+      }
+      case NodeKind.Binary:
+        return { ...expr, left: this.expandSegments(model, expr.left, visiting), right: this.expandSegments(model, expr.right, visiting) };
+      case NodeKind.Unary:
+        return { ...expr, operand: this.expandSegments(model, expr.operand, visiting) };
+      case NodeKind.Between:
+        return {
+          ...expr,
+          value: this.expandSegments(model, expr.value, visiting),
+          lower: this.expandSegments(model, expr.lower, visiting),
+          upper: this.expandSegments(model, expr.upper, visiting)
+        };
+      case NodeKind.In:
+        return {
+          ...expr,
+          value: this.expandSegments(model, expr.value, visiting),
+          list: expr.list.map((item) => this.expandSegments(model, item, visiting))
+        };
+      default:
+        return expr;
+    }
+  }
+
+  private expandSegmentBody(model: string, name: string, body: Expr, span: Span, visiting: Set<string>): Expr {
+    const key = `${model}:${name}`;
+    if (visiting.has(key)) {
+      throw new SemError(DiagCode.CyclicMetric, `segment '${name}' is defined in terms of itself`, span);
+    }
+    visiting.add(key);
+    const expanded = this.expandSegments(model, body, visiting);
+    visiting.delete(key);
+    return expanded;
   }
 
   private resolveSelect(item: MetricSelect): WorkingSelect {
@@ -221,6 +286,10 @@ export class Analyzer {
         return { kind, rows: this.rollingRows(call, dims), orderDim: this.orderDim(dims, call), combinator: this.windowCombinator(base, call), partition: this.seriesPartition(dims, call) };
       case TransformKind.Cumulative:
         return { kind, orderDim: this.orderDim(dims, call), combinator: this.windowCombinator(base, call), partition: this.seriesPartition(dims, call) };
+      case TransformKind.Mtd:
+      case TransformKind.Qtd:
+      case TransformKind.Ytd:
+        return this.buildPeriodToDate(kind, call, dims, base);
       case TransformKind.Share:
         this.requireAdditive(base, call, ReAgg.Sum, "share() sums the base across a partition");
         return { kind, partition: this.sharePartition(call, dims) };
@@ -229,25 +298,49 @@ export class Analyzer {
     }
   }
 
+  private buildPeriodToDate(
+    kind: TransformKind.Mtd | TransformKind.Qtd | TransformKind.Ytd,
+    call: TransformCall,
+    dims: DimPlan[],
+    base: MExpr
+  ): TransformIR {
+    const periodGrain = PERIOD_TO_DATE_GRAIN.get(kind)!;
+    const grainDim = this.timeGrainDim(dims, call);
+    if (GRAIN_DAYS.get(grainDim.grain!)! >= GRAIN_DAYS.get(periodGrain)!) {
+      throw new SemError(
+        DiagCode.TypeMismatch,
+        `transform '.${call.name}' needs a time grain finer than '${periodGrain}' in 'by'; got '${grainDim.grain}'`,
+        call.span
+      );
+    }
+    return {
+      kind,
+      orderDim: grainDim.outputName,
+      combinator: this.windowCombinator(base, call),
+      partition: this.seriesPartition(dims, call),
+      periodGrain
+    };
+  }
+
   private seriesPartition(dims: DimPlan[], call: TransformCall): string[] {
     const order = this.orderDim(dims, call);
     return dims.filter((dim) => dim.outputName !== order).map((dim) => dim.outputName);
   }
 
   private windowCombinator(base: MExpr, call: TransformCall): ReAgg {
-    const reagg = reAggOfExpr(base);
-    if (reagg === ReAgg.None) {
+    const reduce = windowReduce(typeOf(base, call.span).add);
+    if (reduce === ReAgg.None) {
       throw new SemError(
         DiagCode.NonAdditive,
         `transform '.${call.name}' re-aggregates its base over a window, so the base must be additive (sum, count, min, or max); this metric is not`,
         call.span
       );
     }
-    return reagg;
+    return reduce;
   }
 
   private requireAdditive(base: MExpr, call: TransformCall, need: ReAgg, why: string): void {
-    if (reAggOfExpr(base) !== need) {
+    if (windowReduce(typeOf(base, call.span).add) !== need) {
       throw new SemError(
         DiagCode.NonAdditive,
         `transform '.${call.name}' is not valid here: ${why}, which requires a ${need}-additive base metric`,
@@ -353,9 +446,11 @@ export class Analyzer {
     if (hint !== undefined) {
       const model = this.catalog.models.get(hint);
       const metric = model?.metrics.get(name);
-      if (metric !== undefined) return { kind: "metric", model: hint, name, expr: metric.expr, filter: metric.filter };
+      if (metric !== undefined) {
+        return { kind: "metric", model: hint, name, expr: metric.expr, filter: metric.filter, span: metric.span };
+      }
       const measure = model?.measures.get(name);
-      if (measure !== undefined) return { kind: "measure", model: hint, name, expr: measure.expr };
+      if (measure !== undefined) return this.locatedMeasure(hint, name, measure);
     }
     const metricModels = this.catalog.metricIndex.get(name);
     if (metricModels !== undefined) {
@@ -368,7 +463,7 @@ export class Analyzer {
       }
       const model = metricModels[0]!;
       const metric = this.catalog.models.get(model)!.metrics.get(name)!;
-      return { kind: "metric", model, name, expr: metric.expr, filter: metric.filter };
+      return { kind: "metric", model, name, expr: metric.expr, filter: metric.filter, span: metric.span };
     }
     const measureModels = this.catalog.measureIndex.get(name);
     if (measureModels !== undefined) {
@@ -381,9 +476,21 @@ export class Analyzer {
       }
       const model = measureModels[0]!;
       const measure = this.catalog.models.get(model)!.measures.get(name)!;
-      return { kind: "measure", model, name, expr: measure.expr };
+      return this.locatedMeasure(model, name, measure);
     }
     throw new SemError(DiagCode.UnknownMetric, `unknown metric '${name}'`, span, this.suggestMetric(name));
+  }
+
+  private locatedMeasure(model: string, name: string, measure: MeasureInfo): Located {
+    return {
+      kind: "measure",
+      model,
+      name,
+      expr: measure.expr,
+      span: measure.span,
+      unit: measure.unit,
+      additivity: measure.additivity
+    };
   }
 
   private expandLocated(located: Located, span: Span, visiting: Set<string>): MExpr {
@@ -395,11 +502,45 @@ export class Analyzer {
     }
     visiting.add(key);
     const body = this.expandExpr(located.model, located.expr, located.kind, visiting);
-    const result = located.filter !== undefined ? this.attachFilter(body, located.filter) : body;
+    const filtered = located.filter !== undefined ? this.attachFilter(body, located.filter) : body;
+    const result = located.kind === "measure" ? this.annotateMeasure(located, filtered) : filtered;
     visiting.delete(key);
     this.checkShape(located, result, span);
+    typeOf(result, located.span);
     this.cache.set(key, result);
     return result;
+  }
+
+  private annotateMeasure(located: Located, node: MExpr): MExpr {
+    if (node.k !== "agg") return node;
+    const override = located.additivity;
+    if (override === undefined) return { ...node, unit: located.unit };
+    if (override.kind === "non_additive") return { ...node, unit: located.unit, add: NON_ADDITIVE };
+    const inferred = fromReAgg(aggReAgg(node.func, node.distinct));
+    if (inferred.kind !== "additive") {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `measure '${located.name}' cannot be semi-additive because '${node.func}' does not aggregate additively`,
+        override.span
+      );
+    }
+    const semiCol = this.resolveModelDimColumn(located.model, override.dim, override.dimSpan);
+    const add: Additivity = { kind: "semi", reduce: inferred.reduce, rule: override.rule };
+    return { ...node, unit: located.unit, add, semiCol };
+  }
+
+  private resolveModelDimColumn(model: string, dim: string, span: Span): ColExpr {
+    const info = this.catalog.models.get(model)!;
+    const dimInfo = info.dims.get(dim);
+    if (dimInfo === undefined) {
+      throw new SemError(
+        DiagCode.UnknownDimension,
+        `semi-additive dimension '${dim}' is not a dimension of model '${model}'`,
+        span,
+        closestName(dim, info.dims.keys())
+      );
+    }
+    return this.resolveColExpr(model, dimInfo.expr);
   }
 
   private checkShape(located: Located, result: MExpr, span: Span): void {
@@ -431,7 +572,8 @@ export class Analyzer {
   private attachFilter(node: MExpr, filter: Expr): MExpr {
     switch (node.k) {
       case "agg": {
-        const cond = this.resolveCond(filter, this.columnResolver(node.model));
+        const expanded = this.expandSegments(node.model, filter, new Set());
+        const cond = this.resolveCond(expanded, this.columnResolver(node.model));
         const merged: Cond = node.filter !== undefined ? { k: "and", left: node.filter, right: cond } : cond;
         return { ...node, filter: merged };
       }
@@ -509,28 +651,40 @@ export class Analyzer {
   }
 
   private expandCall(model: string, expr: CallExpr): MExpr {
-    const func = expr.callee.toLowerCase();
-    if (!AGG_FUNCS.has(func)) {
+    const funcName = expr.callee.toLowerCase();
+    if (!AGG_FUNCS.has(funcName)) {
       throw new SemError(
         DiagCode.UnknownAggregate,
         `unknown aggregate function '${expr.callee}'`,
         expr.calleeSpan,
-        closestName(func, AGG_FUNCS)
+        closestName(funcName, AGG_FUNCS)
       );
     }
-    if (expr.args.length !== 1) {
-      throw new SemError(
-        DiagCode.TypeMismatch,
-        `aggregate '${func}' expects exactly one argument`,
-        expr.span
-      );
+    const func = funcName as AggFunc;
+    const takesParameter = aggTakesParameter(func);
+    const arity = takesParameter ? 2 : 1;
+    if (expr.args.length !== arity) {
+      const shape = takesParameter ? "a column and a percentile" : "exactly one argument";
+      throw new SemError(DiagCode.TypeMismatch, `aggregate '${funcName}' expects ${shape}`, expr.span);
     }
-    if (expr.distinct && !aggAllowsDistinct(func as AggFunc)) {
-      throw new SemError(DiagCode.TypeMismatch, `aggregate '${func}' does not support 'distinct'`, expr.calleeSpan);
+    if (expr.distinct && !aggAllowsDistinct(func)) {
+      throw new SemError(DiagCode.TypeMismatch, `aggregate '${funcName}' does not support 'distinct'`, expr.calleeSpan);
     }
     const arg = this.resolveColExpr(model, expr.args[0]!);
     const factModel = this.aggModel(model, arg, expr.span);
-    return { k: "agg", model: factModel, func: func as AggFunc, arg, distinct: expr.distinct };
+    const quantile = takesParameter ? this.percentileFraction(expr.args[1]!) : undefined;
+    return { k: "agg", model: factModel, func, arg, distinct: expr.distinct, quantile };
+  }
+
+  private percentileFraction(expr: Expr): number {
+    if (expr.kind !== NodeKind.Literal || expr.literalType !== "number") {
+      throw new SemError(DiagCode.TypeMismatch, "percentile expects a numeric percentile between 0 and 100", expr.span);
+    }
+    const value = expr.value as number;
+    if (value <= 0 || value > 100) {
+      throw new SemError(DiagCode.TypeMismatch, `percentile must be between 0 and 100, got ${value}`, expr.span);
+    }
+    return value / 100;
   }
 
   private aggModel(declaring: string, arg: ColExpr, span: Span): string {

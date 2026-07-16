@@ -1,5 +1,7 @@
 import { AggFunc, ArithOp, CmpOp, DimType, TimeGrain, TransformKind } from "../config/constants.js";
-import { aggReAgg, ReAgg } from "../config/aggregates.js";
+import { ReAgg } from "../config/aggregates.js";
+import { Additivity } from "../config/additivity.js";
+import { Unit } from "../config/units.js";
 
 export interface ColRef {
   readonly model: string;
@@ -34,6 +36,10 @@ export type MExpr =
       readonly arg: ColExpr;
       readonly distinct: boolean;
       readonly filter?: Cond;
+      readonly unit?: Unit;
+      readonly add?: Additivity;
+      readonly semiCol?: ColExpr;
+      readonly quantile?: number;
     }
   | { readonly k: "bin"; readonly op: ArithOp; readonly left: MExpr; readonly right: MExpr }
   | { readonly k: "num"; readonly value: number };
@@ -73,6 +79,13 @@ export type TransformIR =
   | { readonly kind: TransformKind.Mom | TransformKind.Yoy; readonly lag: number; readonly orderDim: string; readonly partition: string[] }
   | { readonly kind: TransformKind.Rolling; readonly rows: number; readonly orderDim: string; readonly combinator: ReAgg; readonly partition: string[] }
   | { readonly kind: TransformKind.Cumulative; readonly orderDim: string; readonly combinator: ReAgg; readonly partition: string[] }
+  | {
+      readonly kind: TransformKind.Mtd | TransformKind.Qtd | TransformKind.Ytd;
+      readonly orderDim: string;
+      readonly combinator: ReAgg;
+      readonly partition: string[];
+      readonly periodGrain: TimeGrain;
+    }
   | { readonly kind: TransformKind.Share; readonly partition: string[] };
 
 export interface SelectMetric {
@@ -114,6 +127,17 @@ export interface SqlResult {
   readonly params: (string | number | boolean)[];
 }
 
+export function hasSemiAdditive(expr: MExpr): boolean {
+  switch (expr.k) {
+    case "agg":
+      return expr.add?.kind === "semi";
+    case "bin":
+      return hasSemiAdditive(expr.left) || hasSemiAdditive(expr.right);
+    case "num":
+      return false;
+  }
+}
+
 export function modelSet(expr: MExpr, into: Set<string> = new Set()): Set<string> {
   switch (expr.k) {
     case "agg":
@@ -128,17 +152,3 @@ export function modelSet(expr: MExpr, into: Set<string> = new Set()): Set<string
   }
 }
 
-export function reAggOfExpr(expr: MExpr): ReAgg {
-  switch (expr.k) {
-    case "agg":
-      return aggReAgg(expr.func, expr.distinct);
-    case "num":
-      return ReAgg.None;
-    case "bin": {
-      if (expr.op !== ArithOp.Add && expr.op !== ArithOp.Sub) return ReAgg.None;
-      const left = reAggOfExpr(expr.left);
-      const right = reAggOfExpr(expr.right);
-      return left === ReAgg.Sum && right === ReAgg.Sum ? ReAgg.Sum : ReAgg.None;
-    }
-  }
-}

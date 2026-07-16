@@ -1,4 +1,5 @@
 import {
+  AggOverride,
   DimensionDecl,
   Expr,
   JoinDecl,
@@ -7,8 +8,10 @@ import {
   ModelDecl,
   NodeKind,
   PolicyDecl,
-  RefExpr
+  RefExpr,
+  SegmentDecl
 } from "../ast/nodes.js";
+import { Unit } from "../config/units.js";
 import { Cardinality, CARDINALITIES, CmpOp, DIM_TYPES, DimType } from "../config/constants.js";
 import { closestName, DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
@@ -25,6 +28,8 @@ export interface MeasureInfo {
   readonly name: string;
   readonly model: string;
   readonly expr: Expr;
+  readonly unit?: Unit;
+  readonly additivity?: AggOverride;
   readonly span: Span;
 }
 
@@ -46,6 +51,13 @@ export interface JoinInfo {
   readonly span: Span;
 }
 
+export interface SegmentInfo {
+  readonly name: string;
+  readonly model: string;
+  readonly expr: Expr;
+  readonly span: Span;
+}
+
 export interface ModelInfo {
   readonly name: string;
   readonly table: string;
@@ -53,6 +65,7 @@ export interface ModelInfo {
   readonly dims: Map<string, DimInfo>;
   readonly measures: Map<string, MeasureInfo>;
   readonly metrics: Map<string, MetricInfo>;
+  readonly segments: Map<string, SegmentInfo>;
   readonly joins: JoinInfo[];
   readonly span: Span;
 }
@@ -129,6 +142,9 @@ export class Catalog {
     const metrics = new Map<string, MetricInfo>();
     for (const metric of decl.metrics) this.addMetric(decl, metric, measures, metrics);
 
+    const segments = new Map<string, SegmentInfo>();
+    for (const segment of decl.segments) this.addSegment(decl, segment, dims, measures, metrics, segments);
+
     this.models.set(decl.name, {
       name: decl.name,
       table: decl.table,
@@ -136,9 +152,28 @@ export class Catalog {
       dims,
       measures,
       metrics,
+      segments,
       joins: [],
       span: decl.span
     });
+  }
+
+  private addSegment(
+    decl: ModelDecl,
+    segment: SegmentDecl,
+    dims: Map<string, DimInfo>,
+    measures: Map<string, MeasureInfo>,
+    metrics: Map<string, MetricInfo>,
+    segments: Map<string, SegmentInfo>
+  ): void {
+    if (segments.has(segment.name) || dims.has(segment.name) || measures.has(segment.name) || metrics.has(segment.name)) {
+      throw new SemError(
+        DiagCode.DuplicateName,
+        `name '${segment.name}' is defined more than once in model '${decl.name}'`,
+        segment.nameSpan
+      );
+    }
+    segments.set(segment.name, { name: segment.name, model: decl.name, expr: segment.expr, span: segment.nameSpan });
   }
 
   private addDimension(decl: ModelDecl, dim: DimensionDecl, dims: Map<string, DimInfo>): void {
@@ -168,7 +203,14 @@ export class Catalog {
         measure.nameSpan
       );
     }
-    measures.set(measure.name, { name: measure.name, model: decl.name, expr: measure.expr, span: measure.nameSpan });
+    measures.set(measure.name, {
+      name: measure.name,
+      model: decl.name,
+      expr: measure.expr,
+      unit: measure.unit,
+      additivity: measure.additivity,
+      span: measure.nameSpan
+    });
     index(this.measureIndex, measure.name, decl.name);
   }
 

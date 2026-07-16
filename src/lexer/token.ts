@@ -23,6 +23,7 @@ export enum TokKind {
   Dimension = "DIMENSION",
   Measure = "MEASURE",
   Metric = "METRIC",
+  Segment = "SEGMENT",
 
   Show = "SHOW",
   By = "BY",

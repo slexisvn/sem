@@ -1,4 +1,5 @@
 import {
+  AggOverride,
   AssertDecl,
   AssertExpectation,
   BetweenExpr,
@@ -23,6 +24,7 @@ import {
   Program,
   QueryDecl,
   RefExpr,
+  SegmentDecl,
   SortDir,
   TransformArg,
   TransformCall,
@@ -30,6 +32,8 @@ import {
 } from "../ast/nodes.js";
 import { TRANSFORM_NAMES } from "../config/constants.js";
 import { DISTINCT_KEYWORD } from "../config/aggregates.js";
+import { SEMI_RULE_ORDER, SemiRule } from "../config/additivity.js";
+import { baseUnit, divUnit, mulUnit, Unit } from "../config/units.js";
 import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span, Token, TokKind } from "../lexer/token.js";
 import { tokenize } from "../lexer/lexer.js";
@@ -223,6 +227,7 @@ export class Parser {
     const dimensions: DimensionDecl[] = [];
     const measures: MeasureDecl[] = [];
     const metrics: MetricDecl[] = [];
+    const segments: SegmentDecl[] = [];
 
     while (!this.at(TokKind.RBrace) && !this.at(TokKind.Eof)) {
       switch (this.peek().kind) {
@@ -245,6 +250,9 @@ export class Parser {
           break;
         case TokKind.Metric:
           metrics.push(this.parseMetric());
+          break;
+        case TokKind.Segment:
+          segments.push(this.parseSegment());
           break;
         default: {
           const token = this.peek();
@@ -280,6 +288,22 @@ export class Parser {
       dimensions,
       measures,
       metrics,
+      segments,
+      span: this.spanFrom(start)
+    };
+  }
+
+  private parseSegment(): SegmentDecl {
+    const start = this.peek().span;
+    this.expect(TokKind.Segment, "'segment'");
+    const nameTok = this.expect(TokKind.Ident, "a segment name");
+    this.expect(TokKind.Eq, "'='");
+    const expr = this.parseExpr(0);
+    return {
+      kind: NodeKind.Segment,
+      name: nameTok.text,
+      nameSpan: nameTok.span,
+      expr,
       span: this.spanFrom(start)
     };
   }
@@ -357,6 +381,12 @@ export class Parser {
     const start = this.peek().span;
     this.expect(TokKind.Measure, "'measure'");
     const nameTok = this.expect(TokKind.Ident, "a measure name");
+    let unit: Unit | undefined;
+    if (this.at(TokKind.Colon)) {
+      this.next();
+      unit = this.parseUnit();
+    }
+    const additivity = this.at(TokKind.Eq) ? undefined : this.parseAggOverride();
     this.expect(TokKind.Eq, "'='");
     const expr = this.parseExpr(0);
     return {
@@ -364,8 +394,54 @@ export class Parser {
       name: nameTok.text,
       nameSpan: nameTok.span,
       expr,
+      unit,
+      additivity,
       span: this.spanFrom(start)
     };
+  }
+
+  private parseUnit(): Unit {
+    let unit = this.parseUnitFactor();
+    for (;;) {
+      if (this.at(TokKind.Star)) {
+        this.next();
+        unit = mulUnit(unit, this.parseUnitFactor());
+      } else if (this.at(TokKind.Slash)) {
+        this.next();
+        unit = divUnit(unit, this.parseUnitFactor());
+      } else {
+        return unit;
+      }
+    }
+  }
+
+  private parseUnitFactor(): Unit {
+    return baseUnit(this.expect(TokKind.Ident, "a unit name").text);
+  }
+
+  private parseAggOverride(): AggOverride {
+    const nameTok = this.expect(TokKind.Ident, "'non_additive' or 'semi_additive'");
+    if (nameTok.text === "non_additive") {
+      return { kind: "non_additive", span: nameTok.span };
+    }
+    if (nameTok.text === "semi_additive") {
+      this.expect(TokKind.LParen, "'(' after 'semi_additive'");
+      const ruleTok = this.expect(TokKind.Ident, "a rule such as 'last' or 'first'");
+      const rule = ruleTok.text as SemiRule;
+      if (!SEMI_RULE_ORDER.has(rule)) {
+        const expected = [...SEMI_RULE_ORDER.keys()].map((r) => `'${r}'`).join(" or ");
+        throw new SemError(DiagCode.ParseError, `unknown semi-additive rule '${ruleTok.text}'; expected ${expected}`, ruleTok.span);
+      }
+      this.expect(TokKind.By, "'by' inside 'semi_additive'");
+      const dimTok = this.expect(TokKind.Ident, "a dimension name");
+      const close = this.expect(TokKind.RParen, "')' to close 'semi_additive'");
+      return { kind: "semi", rule, dim: dimTok.text, dimSpan: dimTok.span, span: { start: nameTok.span.start, end: close.span.end } };
+    }
+    throw new SemError(
+      DiagCode.ParseError,
+      `unknown additivity '${nameTok.text}'; expected 'non_additive' or 'semi_additive'`,
+      nameTok.span
+    );
   }
 
   private parseMetric(): MetricDecl {

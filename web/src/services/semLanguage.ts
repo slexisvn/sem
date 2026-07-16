@@ -4,11 +4,11 @@ import { snippetCompletion } from "@codemirror/autocomplete";
 import { tags } from "@lezer/highlight";
 
 const keywordRE =
-  /^(?:model|table|primary_key|join|on|dimension|measure|metric|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|and|or|not|in|between|like|true|false)\b/;
-const modifierRE = /^distinct\b/;
+  /^(?:model|table|primary_key|join|on|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|and|or|not|in|between|like|true|false)\b/;
+const modifierRE = /^(?:distinct|semi_additive|non_additive|last|first)\b/;
 const typeRE = /^(?:string|number|boolean|time)\b/;
-const aggregateRE = /^(?:sum|count|avg|min|max)\b(?=\s*\()/;
-const transformRE = /^(?:mom|yoy|rolling|cumulative|share)\b/;
+const aggregateRE = /^(?:sum|count|avg|min|max|median|percentile)\b(?=\s*\()/;
+const transformRE = /^(?:mom|yoy|rolling|cumulative|share|mtd|qtd|ytd)\b/;
 const cardinalityRE = /^(?:many_to_one|one_to_many|one_to_one|many_to_many)\b/;
 const durationRE = /^\d+(?:d|w|m|q|y)\b/;
 const numberRE = /^\d+(?:\.\d+)?\b/;
@@ -81,6 +81,7 @@ const keywordCompletions = [
   "dimension",
   "measure",
   "metric",
+  "segment",
   "show",
   "by",
   "where",
@@ -109,7 +110,7 @@ const typeCompletions = ["string", "number", "boolean", "time"].map((label) => (
   type: "type",
 }));
 
-const aggregateCompletions = ["sum", "count", "avg", "min", "max"].map((label) => ({
+const aggregateCompletions = ["sum", "count", "avg", "min", "max", "median", "percentile"].map((label) => ({
   label,
   type: "function",
   apply: `${label}()`,

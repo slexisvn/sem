@@ -19,6 +19,10 @@ export class PostgresDialect extends BaseDialect {
   public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {
     return `generate_series(${startExpr}, ${endExpr}, INTERVAL '1 ${grain}') AS ${this.ident(columnAlias)}`;
   }
+
+  public orderedQuantile(argSql: string, fraction: number): string {
+    return `PERCENTILE_CONT(${fraction}) WITHIN GROUP (ORDER BY ${argSql})`;
+  }
 }
 
 export const postgres = new PostgresDialect();

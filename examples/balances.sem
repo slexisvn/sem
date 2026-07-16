@@ -1,0 +1,42 @@
+# Finance: account balance snapshots — the canonical semi-additive metric.
+# A balance sums across accounts but must NOT sum across time: within a period
+# you take the latest snapshot, then add those up.
+
+model Balances {
+  table finance.balances
+  primary_key id
+
+  join Accounts on account_id = Accounts.id (many_to_one)
+
+  dimension region: string
+  dimension snapshot_at: time
+
+  measure balance : money semi_additive(last by snapshot_at) = sum(amount)
+  measure opening : money semi_additive(first by snapshot_at) = sum(amount)
+  measure movement: money = sum(delta)
+  measure rows    : count = count(id)
+
+  metric total_balance = balance
+  metric opening_balance = opening
+  metric net_movement  = movement
+  metric snapshots     = rows
+}
+
+model Accounts {
+  table finance.accounts
+  primary_key id
+
+  dimension tier: string
+  dimension country: string
+}
+
+materialize balance_by_region as
+  show total_balance by region
+
+assert net_movement where snapshot_at.month = '2026-01' between -100000 and 100000
+
+# Sample queries:
+#   show total_balance by region                 # last snapshot per region, summed
+#   show total_balance, net_movement by region   # semi-additive + additive in one scan
+#   show opening_balance by Accounts.tier         # first snapshot instead of last
+#   show total_balance by snapshot_at.month       # last snapshot within each month

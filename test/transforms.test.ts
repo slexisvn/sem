@@ -109,3 +109,30 @@ describe("date spine densifies the time axis for gap-correct windows", () => {
     expect(sql).toContain("LAG(grid.revenue, 1) OVER");
   });
 });
+
+describe("period-to-date transforms reset a running total at period boundaries", () => {
+  test("mtd partitions a running sum by the enclosing month", () => {
+    const { sql } = run("show revenue.mtd by ordered_at.day");
+    expect(sql).toContain(
+      "SUM(dense.revenue) OVER (PARTITION BY DATE_TRUNC('month', ordered_at_day) ORDER BY ordered_at_day ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS revenue_mtd"
+    );
+  });
+
+  test("ytd partitions by the enclosing year", () => {
+    const { sql } = run("show revenue.ytd by ordered_at.month");
+    expect(sql).toContain("PARTITION BY DATE_TRUNC('year', ordered_at_month)");
+  });
+
+  test("a grouping dimension is kept alongside the period bucket", () => {
+    const { sql } = run("show revenue.qtd by ordered_at.day, region");
+    expect(sql).toContain("PARTITION BY region, DATE_TRUNC('quarter', ordered_at_day)");
+  });
+
+  test("the grain must be finer than the period", () => {
+    expect(() => run("show revenue.mtd by ordered_at.month")).toThrowError(/finer than 'month'/);
+  });
+
+  test("a non-additive base cannot run a period-to-date total", () => {
+    expect(() => run("show avg_amount.ytd by ordered_at.month")).toThrowError(SemError);
+  });
+});

@@ -39,6 +39,8 @@ const TOC: Array<{ id: string; label: string }> = [
   { id: "dimensions", label: "Dimensions" },
   { id: "measures", label: "Measures" },
   { id: "metrics", label: "Metrics" },
+  { id: "segments", label: "Segments" },
+  { id: "types", label: "Types & additivity" },
   { id: "query", label: "Queries" },
   { id: "transforms", label: "Time transforms" },
   { id: "policies", label: "Policies" },
@@ -172,12 +174,14 @@ dimension ordered_at: time`}</Code>
           <p>
             A <code>measure</code> is a raw aggregate over one model. It is the building block metrics
             are made of. Supported aggregate functions: <code>sum</code>, <code>count</code>,{" "}
-            <code>avg</code>, <code>min</code>, <code>max</code>, plus <code>count(distinct …)</code>.
+            <code>avg</code>, <code>min</code>, <code>max</code>, <code>median</code>,{" "}
+            <code>percentile(col, p)</code>, plus <code>count(distinct …)</code>.
           </p>
           <Code>{`measure gross       = sum(amount)
 measure order_count = count(id)
 measure buyer_count = count(distinct customer_id)
-measure amount_max  = max(amount)`}</Code>
+measure amount_max  = max(amount)
+measure latency_p95 = percentile(latency, 95)`}</Code>
           <p className="docs__note">
             Measures are usually not queried directly — you expose them to consumers as metrics.
           </p>
@@ -204,6 +208,75 @@ metric aov         = revenue / orders              # ratio metric`}</Code>
               <code>aov = revenue / orders</code> compose from parts and stay correct at any grain.
             </li>
           </ul>
+        </Section>
+
+        <Section id="segments" title="Segments">
+          <p>
+            A <code>segment</code> is a named, reusable filter — declare a condition once and reference
+            it by name in metric filters, query <code>where</code> clauses, and policies. Segments can
+            build on other segments.
+          </p>
+          <Code>{`model Orders {
+  segment paid          = status = 'paid'
+  segment domestic      = region = 'VN'
+  segment domestic_paid = paid and domestic     # segments compose
+
+  metric revenue    = gross where paid
+  metric vn_revenue = gross where domestic_paid
+}`}</Code>
+          <Code>{`show orders by region where paid          # a segment in a query filter`}</Code>
+          <p className="docs__note">
+            A segment is expanded to its underlying condition at compile time, so it behaves exactly
+            like writing the filter inline — just defined in one place. Query <code>where</code> clauses
+            still only reach dimensions, so a segment used there must filter on dimensions.
+          </p>
+        </Section>
+
+        <Section id="types" title="Types & additivity">
+          <p>
+            sem type-checks your metrics so they can't silently return a wrong number. A measure can
+            carry a <em>unit</em> and an <em>additivity</em> rule; every derived metric infers its own
+            type from those, and the compiler rejects definitions that don't add up.
+          </p>
+
+          <p>
+            <strong>Units.</strong> Annotate a measure with <code>: &lt;unit&gt;</code>. Units combine
+            under arithmetic — a ratio of <code>money</code> over <code>count</code> has unit{" "}
+            <code>money/count</code> — and adding mismatched units is a compile error. Unannotated
+            measures stay unchecked, so units are opt-in and spread gradually.
+          </p>
+          <Code>{`measure gross  : money = sum(amount)
+measure orders : count = count(id)
+
+metric revenue = gross where paid       # money
+metric aov     = gross / orders         # money/count, inferred
+metric broken  = gross + orders         # error: cannot add money and count`}</Code>
+
+          <p>
+            <strong>Additivity.</strong> By default a measure is additive across every dimension. Mark
+            the exceptions:
+          </p>
+          <ul className="docs__list">
+            <li>
+              <code>non_additive</code> — never safe to re-aggregate (an average, a distinct count, a
+              percentile). sem blocks window transforms like <code>.rolling</code> or <code>.share</code>{" "}
+              on it.
+            </li>
+            <li>
+              <code>semi_additive(last by &lt;dim&gt;)</code> — additive across other dimensions but{" "}
+              <em>not</em> along <code>&lt;dim&gt;</code>, where it takes the last (or <code>first</code>)
+              value. The classic case is a balance or inventory snapshot.
+            </li>
+          </ul>
+          <Code>{`measure balance : money semi_additive(last by snapshot_at) = sum(amount)
+metric total_balance = balance
+
+show total_balance by region`}</Code>
+          <p className="docs__note">
+            For a semi-additive measure, that query compiles to a two-stage SQL plan: it picks each
+            region's latest snapshot with a window, then sums across regions — never summing stale
+            snapshots.
+          </p>
         </Section>
 
         <Section id="query" title="Queries">
@@ -240,6 +313,8 @@ show revenue by ordered_at.month having revenue > 100000`}</Code>
 show revenue.yoy by ordered_at.month, region        # year-over-year, per region
 show revenue.rolling(90d) by ordered_at.day         # 90-day rolling window
 show events.cumulative by occurred_at.day           # running total
+show revenue.mtd by ordered_at.day                  # month-to-date running total
+show revenue.ytd by ordered_at.month                # year-to-date running total
 show revenue.share by region                        # each group's share of total`}</Code>
           <table className="docs__table">
             <thead>
@@ -250,6 +325,7 @@ show revenue.share by region                        # each group's share of tota
               <tr><td><code>.yoy</code></td><td>Change vs. the same period last year.</td></tr>
               <tr><td><code>.rolling(Nd)</code></td><td>Rolling window over a duration (<code>d w m q y</code>).</td></tr>
               <tr><td><code>.cumulative</code></td><td>Running total from the start of the series.</td></tr>
+              <tr><td><code>.mtd / .qtd / .ytd</code></td><td>Running total that resets each month / quarter / year. Needs a finer grain in <code>by</code>.</td></tr>
               <tr><td><code>.share</code></td><td>The group's fraction of the overall total.</td></tr>
             </tbody>
           </table>
@@ -302,8 +378,9 @@ model <Name> {
   primary_key <column>
   join <Model> on <cond> (<cardinality>)
   dimension <name>: <string|number|boolean|time>
-  measure <name> = <agg>(<column>)
+  measure <name> [: <unit>] [<additivity>] = <agg>(<column>)
   metric  <name> = <measure | metric expr> [where <filter>]
+  segment <name> = <filter>
 }
 
 policy <name> on <Model> restrict <filter>
@@ -318,10 +395,12 @@ show <metric[.transform]> , ...
   [order by <metric> [asc|desc]]
   [top <n>]
 
-# aggregates    sum count avg min max  (+ count(distinct ..))
+# aggregates    sum count avg min max median percentile(col,p)  (+ count(distinct ..))
+# units         money count time <name>  combined with * and /
+# additivity    non_additive | semi_additive(last|first by <dim>)
 # cardinalities many_to_one one_to_many one_to_one many_to_many
 # grains        day week month quarter year
-# transforms    mom yoy rolling(Nd) cumulative share
+# transforms    mom yoy rolling(Nd) cumulative mtd qtd ytd share
 # operators     = != < <= > >=  and or not  in between like
 # comments      lines starting with #`}</Code>
         </Section>

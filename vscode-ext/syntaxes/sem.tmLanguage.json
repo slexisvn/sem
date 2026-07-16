@@ -27,11 +27,11 @@
       "patterns": [{ "match": "''", "name": "constant.character.escape.sem" }]
     },
     "keywords": {
-      "match": "\\b(model|table|primary_key|join|on|dimension|measure|metric|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|and|or|not|in|between|like|true|false)\\b",
+      "match": "\\b(model|table|primary_key|join|on|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|and|or|not|in|between|like|true|false)\\b",
       "name": "keyword.control.sem"
     },
     "modifiers": {
-      "match": "\\b(distinct)\\b",
+      "match": "\\b(distinct|semi_additive|non_additive|last|first)\\b",
       "name": "storage.modifier.sem"
     },
     "types": {
@@ -39,11 +39,11 @@
       "name": "storage.type.sem"
     },
     "aggregates": {
-      "match": "\\b(sum|count|avg|min|max)\\b(?=\\s*\\()",
+      "match": "\\b(sum|count|avg|min|max|median|percentile)\\b(?=\\s*\\()",
       "name": "support.function.aggregate.sem"
     },
     "transforms": {
-      "match": "(?<=\\.)(mom|yoy|rolling|cumulative|share)\\b",
+      "match": "(?<=\\.)(mom|yoy|rolling|cumulative|share|mtd|qtd|ytd)\\b",
       "name": "support.function.transform.sem"
     },
     "cardinalities": {

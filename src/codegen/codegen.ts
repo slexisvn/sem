@@ -5,6 +5,7 @@ import {
   Cond,
   DimPlan,
   FactPlan,
+  hasSemiAdditive,
   MetricCond,
   MExpr,
   modelSet,
@@ -23,13 +24,18 @@ import {
   DEDUP_VALUE_PREFIX,
   DENSE_CTE,
   GRID_CTE,
+  SEMI_ORDER_PREFIX,
+  SEMI_WINDOW_PREFIX,
   SPINE_CTE,
   SPINE_PERIOD_COL,
   TransformKind
 } from "../config/constants.js";
-import { REAGG_SQL } from "../config/aggregates.js";
+import { aggQuantile, REAGG_SQL } from "../config/aggregates.js";
+import { SemiRule } from "../config/additivity.js";
 import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { SqlDialect } from "./dialect.js";
+
+const RUNNING_FRAME = "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW";
 
 const CMP_SQL: ReadonlyMap<CmpOp, string> = new Map([
   [CmpOp.Eq, "="],
@@ -165,7 +171,15 @@ export class Generator {
         return `${REAGG_SQL.get(t.combinator)!}(${x}) OVER (${over})`;
       }
       case TransformKind.Cumulative: {
-        const over = this.windowSpec(t.partition, t.orderDim, "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
+        const over = this.windowSpec(t.partition, t.orderDim, RUNNING_FRAME);
+        return `${REAGG_SQL.get(t.combinator)!}(${x}) OVER (${over})`;
+      }
+      case TransformKind.Mtd:
+      case TransformKind.Qtd:
+      case TransformKind.Ytd: {
+        const bucket = this.dialect.truncTime(t.periodGrain, this.dialect.ident(t.orderDim));
+        const partition = `PARTITION BY ${[...t.partition.map((d) => this.dialect.ident(d)), bucket].join(", ")}`;
+        const over = [partition, `ORDER BY ${this.dialect.ident(t.orderDim)}`, RUNNING_FRAME].join(" ");
         return `${REAGG_SQL.get(t.combinator)!}(${x}) OVER (${over})`;
       }
       case TransformKind.Share: {
@@ -201,9 +215,61 @@ export class Generator {
   }
 
   private aggregationBody(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+    if (columns.some((column) => hasSemiAdditive(column.node))) {
+      return this.semiAggregation(fact, dims, columns, params);
+    }
     return fact.fannedOut === true
       ? this.dedupedAggregation(fact, dims, columns, params)
       : this.directAggregation(fact, dims, columns, params);
+  }
+
+  private semiAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+    const alias = this.alias(fact.model);
+    const dimExprs = dims.map((dim) => this.renderDim(dim, fact.model, params));
+    const partition = dimExprs.length > 0 ? `PARTITION BY ${dimExprs.join(", ")}` : "";
+    const bindings = new SemiBindings(this.dialect, partition);
+
+    const outerColumns = columns.map(
+      (column) => `${this.renderSemiOuter(column.node, alias, bindings, params)} AS ${this.dialect.ident(column.name)}`
+    );
+
+    const dimProjections = dims.map((dim, i) => `${dimExprs[i]} AS ${this.dialect.ident(dim.outputName)}`);
+    const inner = [
+      `SELECT ${[...dimProjections, ...bindings.projections()].join(", ")}`,
+      `FROM ${this.tableRef(fact.model)}`,
+      ...this.renderJoins(fact)
+    ];
+    if (fact.filter !== undefined) inner.push(`WHERE ${this.renderCond(fact.filter, params)}`);
+
+    const outerDims = dims.map((dim) => `${alias}.${this.dialect.ident(dim.outputName)}`);
+    const selectItems = dims
+      .map((dim, i) => `${outerDims[i]} AS ${this.dialect.ident(dim.outputName)}`)
+      .concat(outerColumns);
+
+    const lines = [`SELECT ${selectItems.join(", ")}`, `FROM (`, `  ${inner.join("\n  ")}`, `) AS ${alias}`];
+    if (outerDims.length > 0) lines.push(`GROUP BY ${outerDims.join(", ")}`);
+    return lines;
+  }
+
+  private renderSemiOuter(node: MExpr, alias: string, bindings: SemiBindings, params: ParamBag): string {
+    if (node.k === "bin") {
+      return this.renderArith(node.op, this.renderSemiOuter(node.left, alias, bindings, params), this.renderSemiOuter(node.right, alias, bindings, params));
+    }
+    if (node.k === "num") return String(node.value);
+
+    const valueRef = `${alias}.${this.dialect.ident(bindings.value(node, () => this.renderSemiValue(node, params)))}`;
+    if (node.add?.kind !== "semi") {
+      return this.renderAggregateCall(node, valueRef);
+    }
+    const orderSql = this.renderColExpr(node.semiCol!, params);
+    const orderRef = `${alias}.${this.dialect.ident(bindings.order(node.semiCol!, orderSql))}`;
+    const windowRef = `${alias}.${this.dialect.ident(bindings.window(node.semiCol!, node.add.rule, orderSql))}`;
+    return `${REAGG_SQL.get(node.add.reduce)!}(CASE WHEN ${orderRef} = ${windowRef} THEN ${valueRef} END)`;
+  }
+
+  private renderSemiValue(node: Extract<MExpr, { k: "agg" }>, params: ParamBag): string {
+    const argSql = this.renderColExpr(node.arg, params);
+    return node.filter !== undefined ? `CASE WHEN ${this.renderCond(node.filter, params)} THEN ${argSql} END` : argSql;
   }
 
   private directAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
@@ -390,14 +456,27 @@ export class Generator {
       case "agg": {
         const arg = this.renderColExpr(node.arg, params);
         const inner = node.filter !== undefined ? `CASE WHEN ${this.renderCond(node.filter, params)} THEN ${arg} END` : arg;
-        const prefix = node.distinct ? "DISTINCT " : "";
-        return `${node.func.toUpperCase()}(${prefix}${inner})`;
+        return this.renderAggregateCall(node, inner);
       }
       case "bin":
         return this.renderArith(node.op, this.renderMExpr(node.left, params), this.renderMExpr(node.right, params));
       case "num":
         return String(node.value);
     }
+  }
+
+  private renderAggregateCall(node: Extract<MExpr, { k: "agg" }>, valueSql: string): string {
+    const quantile = aggQuantile(node.func);
+    if (quantile !== undefined) {
+      const fraction = quantile ?? node.quantile!;
+      const rendered = this.dialect.orderedQuantile?.(valueSql, fraction);
+      if (rendered === undefined) {
+        throw new SemError(DiagCode.Unsupported, `dialect '${this.dialect.name}' does not support the '${node.func}' aggregate`);
+      }
+      return rendered;
+    }
+    const prefix = node.distinct ? "DISTINCT " : "";
+    return `${node.func.toUpperCase()}(${prefix}${valueSql})`;
   }
 
   private renderMetricCond(cond: MetricCond, params: ParamBag): string {
@@ -468,7 +547,7 @@ function isValue(node: ColExpr | ValueRef): node is ValueRef {
 function signature(node: MExpr): string {
   switch (node.k) {
     case "agg":
-      return `${node.func}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
+      return `${node.func}${node.quantile !== undefined ? ":" + node.quantile : ""}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
     case "bin":
       return `(${signature(node.left)}${node.op}${signature(node.right)})`;
     case "num":
@@ -505,6 +584,48 @@ function sigCond(cond: Cond): string {
       return `bt(${sigCol(cond.left)},${String(cond.lo.value)},${String(cond.hi.value)})`;
     case "like":
       return `like(${sigCol(cond.left)},${String(cond.pattern.value)})`;
+  }
+}
+
+const SEMI_WINDOW_FUNC: ReadonlyMap<SemiRule, string> = new Map([
+  ["last", "MAX"],
+  ["first", "MIN"]
+]);
+
+class SemiBindings {
+  private readonly values = new Map<string, string>();
+  private readonly orders = new Map<string, string>();
+  private readonly windows = new Map<string, string>();
+  private readonly valueProjections: string[] = [];
+  private readonly orderProjections: string[] = [];
+  private readonly windowProjections: string[] = [];
+
+  constructor(private readonly dialect: SqlDialect, private readonly partition: string) {}
+
+  public value(node: Extract<MExpr, { k: "agg" }>, render: () => string): string {
+    return this.intern(this.values, this.valueProjections, signature(node), DEDUP_VALUE_PREFIX, render);
+  }
+
+  public order(col: ColExpr, sql: string): string {
+    return this.intern(this.orders, this.orderProjections, sigCol(col), SEMI_ORDER_PREFIX, () => sql);
+  }
+
+  public window(col: ColExpr, rule: SemiRule, sql: string): string {
+    const key = `${rule}:${sigCol(col)}`;
+    return this.intern(this.windows, this.windowProjections, key, SEMI_WINDOW_PREFIX, () => `${SEMI_WINDOW_FUNC.get(rule)!}(${sql}) OVER (${this.partition})`);
+  }
+
+  public projections(): string[] {
+    return [...this.valueProjections, ...this.orderProjections, ...this.windowProjections];
+  }
+
+  private intern(map: Map<string, string>, projections: string[], key: string, prefix: string, render: () => string): string {
+    const existing = map.get(key);
+    if (existing !== undefined) return existing;
+    const name = `${prefix}${map.size}`;
+    map.set(key, name);
+    projections.push(`${render()} AS ${this.dialect.ident(name)}`);
+    return name;
   }
 }
 

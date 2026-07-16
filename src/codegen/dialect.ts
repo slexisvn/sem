@@ -8,6 +8,7 @@ export interface SqlDialect {
   truncTime(grain: TimeGrain, expr: string): string;
   limit(n: number): string;
   periodSeries?(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string;
+  orderedQuantile?(argSql: string, fraction: number): string;
 }
 
 const SIMPLE_IDENT = /^[a-z_][a-z0-9_]*$/;

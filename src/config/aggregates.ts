@@ -10,6 +10,7 @@ export enum ReAgg {
 interface AggSemantics {
   readonly reagg: ReAgg;
   readonly allowsDistinct: boolean;
+  readonly quantile?: number | null;
 }
 
 const AGG_SEMANTICS: ReadonlyMap<AggFunc, AggSemantics> = new Map([
@@ -17,7 +18,9 @@ const AGG_SEMANTICS: ReadonlyMap<AggFunc, AggSemantics> = new Map([
   [AggFunc.Count, { reagg: ReAgg.Sum, allowsDistinct: true }],
   [AggFunc.Avg, { reagg: ReAgg.None, allowsDistinct: true }],
   [AggFunc.Min, { reagg: ReAgg.Min, allowsDistinct: false }],
-  [AggFunc.Max, { reagg: ReAgg.Max, allowsDistinct: false }]
+  [AggFunc.Max, { reagg: ReAgg.Max, allowsDistinct: false }],
+  [AggFunc.Median, { reagg: ReAgg.None, allowsDistinct: false, quantile: 0.5 }],
+  [AggFunc.Percentile, { reagg: ReAgg.None, allowsDistinct: false, quantile: null }]
 ]);
 
 export const REAGG_SQL: ReadonlyMap<ReAgg, string> = new Map([
@@ -34,4 +37,12 @@ export function aggAllowsDistinct(func: AggFunc): boolean {
 
 export function aggReAgg(func: AggFunc, distinct: boolean): ReAgg {
   return distinct ? ReAgg.None : AGG_SEMANTICS.get(func)!.reagg;
+}
+
+export function aggQuantile(func: AggFunc): number | null | undefined {
+  return AGG_SEMANTICS.get(func)!.quantile;
+}
+
+export function aggTakesParameter(func: AggFunc): boolean {
+  return AGG_SEMANTICS.get(func)!.quantile === null;
 }
