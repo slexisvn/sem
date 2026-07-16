@@ -2,6 +2,7 @@ import { AggFunc, ArithOp, CmpOp, DimType, TimeGrain, TransformKind } from "../c
 import { ReAgg } from "../config/aggregates.js";
 import { Additivity } from "../config/additivity.js";
 import { Unit } from "../config/units.js";
+import { Span } from "../lexer/token.js";
 
 export interface ColRef {
   readonly model: string;
@@ -53,12 +54,20 @@ export type MetricCond =
 
 export type Strategy = "single" | "multi";
 
+export interface AsOfInfo {
+  readonly left: ColRef;
+  readonly op: CmpOp;
+  readonly right: ColRef;
+}
+
 export interface JoinEdge {
   readonly fromModel: string;
   readonly target: string;
   readonly left: ColRef;
   readonly op: CmpOp;
   readonly right: ColRef;
+  readonly asof?: AsOfInfo;
+  readonly span: Span;
 }
 
 export interface FactPlan {
@@ -86,7 +95,8 @@ export type TransformIR =
       readonly partition: string[];
       readonly periodGrain: TimeGrain;
     }
-  | { readonly kind: TransformKind.Share; readonly partition: string[] };
+  | { readonly kind: TransformKind.Share; readonly partition: string[] }
+  | { readonly kind: TransformKind.Of; readonly combinator: ReAgg; readonly partition: string[] };
 
 export interface SelectMetric {
   readonly name: string;
@@ -104,6 +114,26 @@ export interface Plan {
   readonly orderBy?: { readonly name: string; readonly dir: "asc" | "desc" };
   readonly limit?: number;
   readonly having?: MetricCond;
+}
+
+export interface FunnelStepIR {
+  readonly name: string;
+  readonly cond: Cond;
+}
+
+export interface FunnelPlan {
+  readonly model: string;
+  readonly entity: ColRef;
+  readonly time: ColRef;
+  readonly steps: FunnelStepIR[];
+}
+
+export interface RetentionPlan {
+  readonly model: string;
+  readonly entity: ColRef;
+  readonly time: ColRef;
+  readonly grain: TimeGrain;
+  readonly periods: number;
 }
 
 export function columnModelOf(expr: ColExpr, into: Set<string> = new Set()): Set<string> {

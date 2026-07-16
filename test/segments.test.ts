@@ -10,10 +10,12 @@ model Orders {
   segment paid = status = 'paid'
   segment domestic = region = 'VN'
   segment domestic_paid = paid and domestic
+  segment tri = domestic_paid and status = 'refunded'
   measure gross = sum(amount)
   measure cnt = count(id)
   metric revenue = gross where paid
   metric vn_revenue = gross where domestic_paid
+  metric tri_revenue = gross where tri
   metric orders = cnt
 }
 policy vn_only on Orders restrict domestic
@@ -58,5 +60,18 @@ describe("segments are reusable named filters", () => {
   test("a self-referential segment is rejected", () => {
     const cyclic = MODEL.replace("segment domestic_paid = paid and domestic", "segment domestic_paid = domestic_paid and paid");
     expect(codeOf(() => compile(cyclic, "show vn_revenue by region"))).toBe(DiagCode.CyclicMetric);
+  });
+
+  test("nested segments flatten fully into one expanded condition", () => {
+    expect(compile(MODEL, "show tri_revenue by region").sql).toContain(
+      "CASE WHEN ((orders.status = $1 AND orders.region = $2) AND orders.status = $3) THEN orders.amount END"
+    );
+  });
+
+  test("a cycle between two mutually-referencing segments is rejected", () => {
+    const cyclic = MODEL
+      .replace("segment paid = status = 'paid'", "segment paid = domestic and status = 'paid'")
+      .replace("segment domestic = region = 'VN'", "segment domestic = paid and region = 'VN'");
+    expect(codeOf(() => compile(cyclic, "show revenue by region"))).toBe(DiagCode.CyclicMetric);
   });
 });

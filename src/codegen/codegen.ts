@@ -1,11 +1,15 @@
 import { Catalog } from "../analyzer/catalog.js";
 import {
+  AsOfInfo,
   ColExpr,
   ColRef,
   Cond,
   DimPlan,
   FactPlan,
+  FunnelPlan,
+  RetentionPlan,
   hasSemiAdditive,
+  JoinEdge,
   MetricCond,
   MExpr,
   modelSet,
@@ -17,15 +21,29 @@ import {
 } from "../analyzer/ir.js";
 import {
   ArithOp,
+  ASOF_ORDER,
   CmpOp,
   COMPONENT_PREFIX,
   CTE_SUFFIX,
   DEDUP_KEY_ALIAS,
   DEDUP_VALUE_PREFIX,
   DENSE_CTE,
+  FUNNEL_CTE,
+  FUNNEL_ENTITY_ALIAS,
+  FUNNEL_STEP_PREFIX,
+  RETENTION_ACTIVITY_CTE,
+  RETENTION_COHORT,
+  RETENTION_COHORT_COL,
+  RETENTION_COHORT_CTE,
+  RETENTION_ENTITY,
+  RETENTION_EVENTS_CTE,
+  RETENTION_OFFSET,
+  RETENTION_PERIOD,
+  RETENTION_PERIOD_PREFIX,
   GRID_CTE,
   SEMI_ORDER_PREFIX,
   SEMI_WINDOW_PREFIX,
+  SERIESLESS_TRANSFORMS,
   SPINE_CTE,
   SPINE_PERIOD_COL,
   TransformKind
@@ -85,6 +103,61 @@ export class Generator {
     return plan.strategy === "single" ? this.genSingle(plan) : this.genMulti(plan);
   }
 
+  public generateFunnel(plan: FunnelPlan): SqlResult {
+    const params = new ParamBag(this.dialect);
+    const entitySql = this.renderColRef(plan.entity);
+    const timeSql = this.renderColRef(plan.time);
+    const stepCols = plan.steps.map((step, i) => {
+      const col = `${FUNNEL_STEP_PREFIX}${i}`;
+      return `MIN(CASE WHEN ${this.renderCond(step.cond, params)} THEN ${timeSql} END) AS ${col}`;
+    });
+    const base = [
+      `SELECT ${entitySql} AS ${FUNNEL_ENTITY_ALIAS}, ${stepCols.join(", ")}`,
+      `FROM ${this.tableRef(plan.model)}`,
+      `GROUP BY ${entitySql}`
+    ].join("\n  ");
+
+    const guards: string[] = [];
+    const counts = plan.steps.map((step, i) => {
+      const col = `${FUNNEL_CTE}.${FUNNEL_STEP_PREFIX}${i}`;
+      guards.push(i === 0 ? `${col} IS NOT NULL` : `${col} >= ${FUNNEL_CTE}.${FUNNEL_STEP_PREFIX}${i - 1}`);
+      return `SUM(CASE WHEN ${guards.join(" AND ")} THEN 1 ELSE 0 END) AS ${this.dialect.ident(step.name)}`;
+    });
+
+    const sql = `WITH ${FUNNEL_CTE} AS (\n  ${base}\n)\nSELECT ${counts.join(", ")}\nFROM ${FUNNEL_CTE};`;
+    return { sql, params: params.collect() };
+  }
+
+  public generateRetention(plan: RetentionPlan): SqlResult {
+    if (this.dialect.periodDiff === undefined) {
+      throw new SemError(DiagCode.Unsupported, `dialect '${this.dialect.name}' does not support retention`);
+    }
+    const period = this.dialect.truncTime(plan.grain, this.renderColRef(plan.time));
+    const events = [
+      `SELECT ${this.renderColRef(plan.entity)} AS ${RETENTION_ENTITY}, ${period} AS ${RETENTION_PERIOD}`,
+      `FROM ${this.tableRef(plan.model)}`
+    ].join("\n  ");
+    const cohorts = `SELECT ${RETENTION_ENTITY}, MIN(${RETENTION_PERIOD}) AS ${RETENTION_COHORT} FROM ${RETENTION_EVENTS_CTE} GROUP BY ${RETENTION_ENTITY}`;
+    const offset = this.dialect.periodDiff(plan.grain, `e.${RETENTION_PERIOD}`, `c.${RETENTION_COHORT}`);
+    const activity = [
+      `SELECT DISTINCT c.${RETENTION_COHORT} AS ${RETENTION_COHORT_COL}, e.${RETENTION_ENTITY} AS ${RETENTION_ENTITY}, ${offset} AS ${RETENTION_OFFSET}`,
+      `FROM ${RETENTION_EVENTS_CTE} AS e JOIN ${RETENTION_COHORT_CTE} AS c ON e.${RETENTION_ENTITY} = c.${RETENTION_ENTITY}`
+    ].join("\n  ");
+
+    const columns = [RETENTION_COHORT_COL];
+    for (let k = 0; k <= plan.periods; k++) {
+      columns.push(`COUNT(DISTINCT CASE WHEN ${RETENTION_OFFSET} = ${k} THEN ${RETENTION_ENTITY} END) AS ${RETENTION_PERIOD_PREFIX}${k}`);
+    }
+
+    const ctes = [
+      `${RETENTION_EVENTS_CTE} AS (\n  ${events}\n)`,
+      `${RETENTION_COHORT_CTE} AS (\n  ${cohorts}\n)`,
+      `${RETENTION_ACTIVITY_CTE} AS (\n  ${activity}\n)`
+    ].join(",\n");
+    const sql = `WITH ${ctes}\nSELECT ${columns.join(", ")}\nFROM ${RETENTION_ACTIVITY_CTE}\nGROUP BY ${RETENTION_COHORT_COL}\nORDER BY ${RETENTION_COHORT_COL};`;
+    return { sql, params: [] };
+  }
+
   private genWindowed(plan: Plan): SqlResult {
     const fact = plan.facts[0]!;
     const params = new ParamBag(this.dialect);
@@ -96,7 +169,7 @@ export class Generator {
     const ctes = [`${GRID_CTE} AS (\n  ${grid.join("\n  ")}\n)`];
 
     const timeDim = plan.dims.find((dim) => dim.grain !== undefined);
-    const hasSeries = plan.selects.some((s) => s.transform !== undefined && s.transform.kind !== TransformKind.Share);
+    const hasSeries = plan.selects.some((s) => s.transform !== undefined && !SERIESLESS_TRANSFORMS.has(s.transform.kind));
     const densify = hasSeries && timeDim !== undefined && this.dialect.periodSeries !== undefined;
     const source = densify ? DENSE_CTE : GRID_CTE;
 
@@ -184,6 +257,9 @@ export class Generator {
       }
       case TransformKind.Share: {
         return `(${x} / NULLIF(SUM(${x}) OVER (${this.partitionClause(t.partition)}), 0))`;
+      }
+      case TransformKind.Of: {
+        return `${REAGG_SQL.get(t.combinator)!}(${x}) OVER (${this.partitionClause(t.partition)})`;
       }
     }
   }
@@ -440,10 +516,22 @@ export class Generator {
   }
 
   private renderJoins(fact: FactPlan): string[] {
-    return fact.joins.map((edge) => {
-      const op = CMP_SQL.get(edge.op)!;
-      return `LEFT JOIN ${this.tableRef(edge.target)} ON ${this.renderColRef(edge.left)} ${op} ${this.renderColRef(edge.right)}`;
-    });
+    return fact.joins.map((edge) => (edge.asof !== undefined ? this.renderAsOfJoin(edge, edge.asof) : this.renderEquiJoin(edge)));
+  }
+
+  private renderEquiJoin(edge: JoinEdge): string {
+    const op = CMP_SQL.get(edge.op)!;
+    return `LEFT JOIN ${this.tableRef(edge.target)} ON ${this.renderColRef(edge.left)} ${op} ${this.renderColRef(edge.right)}`;
+  }
+
+  private renderAsOfJoin(edge: JoinEdge, asof: AsOfInfo): string {
+    if (this.dialect.asOfLateral === undefined) {
+      throw new SemError(DiagCode.Unsupported, `dialect '${this.dialect.name}' does not support asof joins`, edge.span);
+    }
+    const keyPred = `${this.renderColRef(edge.left)} ${CMP_SQL.get(edge.op)!} ${this.renderColRef(edge.right)}`;
+    const tsPred = `${this.renderColRef(asof.left)} ${CMP_SQL.get(asof.op)!} ${this.renderColRef(asof.right)}`;
+    const order = `${this.renderColRef(asof.right)} ${ASOF_ORDER.get(asof.op)!.toUpperCase()}`;
+    return this.dialect.asOfLateral(this.dialect.qualifiedName(this.tableOf(edge.target)), this.alias(edge.target), keyPred, tsPred, order);
   }
 
   private renderDim(dim: DimPlan, model: string, params: ParamBag): string {
@@ -631,4 +719,12 @@ class SemiBindings {
 
 export function generate(catalog: Catalog, plan: Plan, dialect: SqlDialect): SqlResult {
   return new Generator(catalog, dialect).generate(plan);
+}
+
+export function generateFunnel(catalog: Catalog, plan: FunnelPlan, dialect: SqlDialect): SqlResult {
+  return new Generator(catalog, dialect).generateFunnel(plan);
+}
+
+export function generateRetention(catalog: Catalog, plan: RetentionPlan, dialect: SqlDialect): SqlResult {
+  return new Generator(catalog, dialect).generateRetention(plan);
 }

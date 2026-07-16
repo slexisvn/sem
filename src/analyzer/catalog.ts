@@ -12,10 +12,11 @@ import {
   SegmentDecl
 } from "../ast/nodes.js";
 import { Unit } from "../config/units.js";
-import { Cardinality, CARDINALITIES, CmpOp, DIM_TYPES, DimType } from "../config/constants.js";
+import { ASOF_ORDER, Cardinality, CARDINALITIES, CmpOp, DIM_TYPES, DimType, FANOUT_CARDINALITIES } from "../config/constants.js";
+import { AsOfClause } from "../ast/nodes.js";
 import { closestName, DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
-import { ColRef } from "./ir.js";
+import { AsOfInfo, ColRef } from "./ir.js";
 
 export interface DimInfo {
   readonly name: string;
@@ -47,6 +48,7 @@ export interface JoinInfo {
   readonly left: ColRef;
   readonly op: CmpOp;
   readonly right: ColRef;
+  readonly asof?: AsOfInfo;
   readonly cardinality: Cardinality;
   readonly span: Span;
 }
@@ -268,9 +270,30 @@ export class Catalog {
       left: from,
       op,
       right: to,
+      asof: join.asof !== undefined ? this.buildAsOf(fromModel, join, join.asof) : undefined,
       cardinality: join.cardinality as Cardinality,
       span: join.span
     };
+  }
+
+  private buildAsOf(fromModel: string, join: JoinDecl, clause: AsOfClause): AsOfInfo {
+    if (FANOUT_CARDINALITIES.has(join.cardinality as Cardinality)) {
+      throw new SemError(DiagCode.InvalidDefinition, `asof join '${join.target}' must be many_to_one or one_to_one, not '${join.cardinality}'`, clause.span);
+    }
+    const op = CMP_TEXT_TO_OP.get(clause.op);
+    if (op === undefined || !ASOF_ORDER.has(op)) {
+      throw new SemError(DiagCode.InvalidDefinition, `asof match must compare timestamps with <, <=, > or >=`, clause.span);
+    }
+    const left = this.joinSide(fromModel, clause.left, fromModel, join.target, clause.span);
+    const right = this.joinSide(join.target, clause.right, fromModel, join.target, clause.span);
+    if (left.model !== fromModel || right.model !== join.target) {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `asof match must read the fact timestamp on the left and '${join.target}' on the right`,
+        clause.span
+      );
+    }
+    return { left, op, right };
   }
 
   private joinSide(preferred: string, ref: RefExpr, fromModel: string, target: string, span: Span): ColRef {

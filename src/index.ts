@@ -1,11 +1,13 @@
 import { ModelDecl, Program, QueryDecl } from "./ast/nodes.js";
-import { analyze, AnalyzeOptions } from "./analyzer/analyzer.js";
+import { analyze, analyzeFunnel, analyzeRetention, AnalyzeOptions } from "./analyzer/analyzer.js";
 import { Catalog } from "./analyzer/catalog.js";
-import { Plan, SqlResult } from "./analyzer/ir.js";
-import { generate } from "./codegen/codegen.js";
+import { FunnelPlan, Plan, RetentionPlan, SqlResult } from "./analyzer/ir.js";
+import { generate, generateFunnel, generateRetention } from "./codegen/codegen.js";
 import { SqlDialect } from "./codegen/dialect.js";
 import { postgres } from "./codegen/postgres.js";
-import { parseProgram, parseQuery } from "./parser/parser.js";
+import { parseFunnel, parseProgram, parseQuery, parseRetention } from "./parser/parser.js";
+import { tokenize } from "./lexer/lexer.js";
+import { TokKind } from "./lexer/token.js";
 
 export * from "./lexer/token.js";
 export * from "./config/constants.js";
@@ -13,17 +15,17 @@ export * from "./config/aggregates.js";
 export * from "./diagnostics/diagnostic.js";
 export * from "./ast/nodes.js";
 export { tokenize, Lexer } from "./lexer/lexer.js";
-export { Parser, parseModels, parseProgram, parseQuery } from "./parser/parser.js";
+export { Parser, parseModels, parseProgram, parseQuery, parseFunnel, parseRetention } from "./parser/parser.js";
 export { Catalog } from "./analyzer/catalog.js";
 export type { DimInfo, MeasureInfo, MetricInfo, JoinInfo, ModelInfo, PolicyInfo } from "./analyzer/catalog.js";
-export { Analyzer, analyze } from "./analyzer/analyzer.js";
+export { Analyzer, analyze, analyzeFunnel, analyzeRetention } from "./analyzer/analyzer.js";
 export type { AnalyzeOptions } from "./analyzer/analyzer.js";
 export * from "./analyzer/ir.js";
 export type { SqlDialect } from "./codegen/dialect.js";
 export { PostgresDialect, postgres } from "./codegen/postgres.js";
 export { BigQueryDialect, bigquery } from "./codegen/bigquery.js";
 export { MySqlDialect, mysql } from "./codegen/mysql.js";
-export { Generator, generate } from "./codegen/codegen.js";
+export { Generator, generate, generateFunnel, generateRetention } from "./codegen/codegen.js";
 export { compileAssert, compileAsserts } from "./tools/assertions.js";
 export type { CompiledAssert } from "./tools/assertions.js";
 export { materialize, materializeDecl } from "./tools/materialize.js";
@@ -41,7 +43,7 @@ export function catalogFromSource(source: string): Catalog {
 }
 
 export interface Compiled extends SqlResult {
-  readonly plan: Plan;
+  readonly plan: Plan | FunnelPlan | RetentionPlan;
 }
 
 export interface CompileOptions extends AnalyzeOptions {
@@ -58,9 +60,23 @@ export function compileWithCatalog(
   options: CompileOptions = {}
 ): Compiled {
   const dialect = options.dialect ?? postgres;
+  const lead = leadingKind(querySource);
+  if (lead === TokKind.Funnel) {
+    const plan = analyzeFunnel(catalog, parseFunnel(querySource));
+    return { ...generateFunnel(catalog, plan, dialect), plan };
+  }
+  if (lead === TokKind.Retention) {
+    const plan = analyzeRetention(catalog, parseRetention(querySource));
+    return { ...generateRetention(catalog, plan, dialect), plan };
+  }
   const plan = analyze(catalog, parseQuery(querySource), options);
   const result = generate(catalog, plan, dialect);
   return { ...result, plan };
+}
+
+function leadingKind(source: string): TokKind | undefined {
+  const tokens = tokenize(source);
+  return tokens.length > 0 ? tokens[0]!.kind : undefined;
 }
 
 export type { ModelDecl, Program, QueryDecl };

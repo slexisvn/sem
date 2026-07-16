@@ -1,0 +1,63 @@
+# Two-sided marketplace: gross merchandise value, take rate, and the split
+# between buyers and sellers. Row-level security scopes analysts to one region.
+
+model Orders {
+  table market.orders
+  primary_key id
+
+  join Buyers on buyer_id = Buyers.id (many_to_one)
+  join Sellers on seller_id = Sellers.id (many_to_one)
+
+  dimension region: string
+  dimension category: string
+  dimension status: string
+  dimension placed_at: time
+
+  segment settled  = status = 'settled'
+  segment refunded = status = 'refunded'
+
+  measure gmv_sum     : money = sum(amount)
+  measure fee_sum     : money = sum(platform_fee)
+  measure order_count : count = count(id)
+  measure buyer_count : count = count(distinct buyer_id)
+  measure seller_count: count = count(distinct seller_id)
+
+  metric gmv        = gmv_sum where settled
+  metric refunds    = gmv_sum where refunded
+  metric net_gmv    = gmv - refunds
+  metric fees       = fee_sum where settled
+  metric take_rate  = fees / gmv
+  metric orders     = order_count where settled
+  metric buyers     = buyer_count
+  metric sellers    = seller_count
+}
+
+model Buyers {
+  table market.buyers
+  primary_key id
+
+  dimension country: string
+  dimension segment_name: string
+}
+
+model Sellers {
+  table market.sellers
+  primary_key id
+
+  dimension country: string
+  dimension is_pro: boolean
+}
+
+policy analyst_apac on Orders restrict region = 'APAC'
+
+materialize gmv_trend as
+  show gmv, gmv.mom, gmv.yoy by placed_at.month
+
+assert take_rate where placed_at.month = '2026-01' between 0 and 1
+
+# Sample queries:
+#   show gmv, net_gmv, take_rate by category
+#   show gmv.share by region                            # each region's share of GMV
+#   show gmv, gmv.of(region) by region, category        # region subtotal beside the detail
+#   show buyers, sellers by Buyers.country              # distinct counts across a join
+#   show gmv.qtd by placed_at.day, category             # quarter-to-date GMV by category

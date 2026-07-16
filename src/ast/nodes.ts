@@ -21,7 +21,9 @@ export enum NodeKind {
   MetricSelect = "MetricSelect",
   Policy = "Policy",
   Assert = "Assert",
-  Materialize = "Materialize"
+  Materialize = "Materialize",
+  Funnel = "Funnel",
+  Retention = "Retention"
 }
 
 export type LiteralType = "string" | "number" | "boolean";
@@ -100,6 +102,13 @@ export type Expr =
 
 export type RefExpr = IdentExpr | MemberExpr;
 
+export interface AsOfClause {
+  readonly left: RefExpr;
+  readonly op: BinaryOp;
+  readonly right: RefExpr;
+  readonly span: Span;
+}
+
 export interface JoinDecl {
   readonly kind: NodeKind.Join;
   readonly target: string;
@@ -107,6 +116,7 @@ export interface JoinDecl {
   readonly left: RefExpr;
   readonly op: BinaryOp;
   readonly right: RefExpr;
+  readonly asof?: AsOfClause;
   readonly cardinality: string;
   readonly span: Span;
 }
@@ -239,6 +249,33 @@ export interface MaterializeDecl {
   readonly name: string;
   readonly nameSpan: Span;
   readonly query: QueryDecl;
+  readonly span: Span;
+}
+
+export interface FunnelStep {
+  readonly name: string;
+  readonly nameSpan: Span;
+  readonly cond: Expr;
+}
+
+export interface FunnelDecl {
+  readonly kind: NodeKind.Funnel;
+  readonly model: string;
+  readonly modelSpan: Span;
+  readonly entity: RefExpr;
+  readonly time: RefExpr;
+  readonly steps: FunnelStep[];
+  readonly span: Span;
+}
+
+export interface RetentionDecl {
+  readonly kind: NodeKind.Retention;
+  readonly model: string;
+  readonly modelSpan: Span;
+  readonly entity: RefExpr;
+  readonly time: RefExpr;
+  readonly periods: number;
+  readonly periodsSpan: Span;
   readonly span: Span;
 }
 

@@ -1,0 +1,50 @@
+# Growth analytics: a raw event stream feeding funnels, retention, and segments.
+
+model Events {
+  table product.events
+  primary_key id
+
+  join Users on user_id = Users.id (many_to_one)
+
+  dimension name: string
+  dimension platform: string
+  dimension occurred_at: time
+
+  segment signup    = name = 'signup'
+  segment activated = name = 'activate'
+  segment purchase  = name = 'purchase'
+  segment mobile    = platform = 'ios' or platform = 'android'
+
+  measure event_count = count(id)
+  measure user_count  = count(distinct user_id)
+
+  metric events        = event_count
+  metric active_users  = user_count
+  metric signups       = event_count where signup
+  metric mobile_share  = mobile_events / events
+  metric mobile_events = event_count where mobile
+}
+
+model Users {
+  table product.users
+  primary_key id
+
+  dimension country: string
+  dimension plan: string
+}
+
+materialize daily_signups as
+  show signups by occurred_at.day
+
+materialize weekly_events as
+  show events, events.rolling(28d) by occurred_at.week
+
+assert active_users where occurred_at.month = '2026-06' between 1000 and 500000
+
+# Sample queries:
+#   show active_users, signups, mobile_share by platform
+#   funnel Events by user_id over occurred_at
+#     steps viewed = name = 'view', activated = activated, purchased = purchase
+#   retention Events by user_id over occurred_at.week periods 8
+#   show events.share by platform                       # each platform's share of events
+#   show signups by Users.country                       # segment filter across a join

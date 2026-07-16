@@ -1,0 +1,49 @@
+# Observability: API request logs. Latency is summarised with quantiles (never
+# averages), and traffic is tracked with period-to-date and rolling windows.
+
+model Requests {
+  table observability.requests
+  primary_key id
+
+  join Services on service_id = Services.id (many_to_one)
+
+  dimension route: string
+  dimension status_class: string
+  dimension received_at: time
+
+  measure hits    : count = count(id)
+  measure p50     : time  = median(latency_ms)
+  measure p95     : time  = percentile(latency_ms, 95)
+  measure p99     : time  = percentile(latency_ms, 99)
+  measure error_hits: count = count(id)
+
+  metric requests    = hits
+  metric latency_p50 = p50
+  metric latency_p95 = p95
+  metric latency_p99 = p99
+  metric errors      = error_hits where status_class = '5xx'
+  metric error_rate  = errors / requests
+}
+
+model Services {
+  table observability.services
+  primary_key id
+
+  dimension team: string
+  dimension criticality: string
+}
+
+materialize traffic_mtd as
+  show requests, requests.mtd by received_at.day
+
+materialize latency_trend as
+  show latency_p50, latency_p95, latency_p99 by received_at.day
+
+assert error_rate where received_at.month = '2026-06' between 0 and 1
+
+# Sample queries:
+#   show requests, latency_p50, latency_p95, latency_p99 by route
+#   show error_rate by Services.team                   # ratio metric across a join
+#   show requests.ytd by received_at.month             # year-to-date traffic
+#   show requests, requests.of(route) by route, status_class   # route subtotal per status
+#   show latency_p99 by Services.criticality           # p99 by service tier

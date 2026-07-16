@@ -5,7 +5,9 @@ import {
   BinaryOp,
   CallExpr,
   Expr,
+  FunnelDecl,
   InExpr,
+  RetentionDecl,
   LiteralExpr,
   MetricSelect,
   NodeKind,
@@ -39,10 +41,13 @@ import { Span } from "../lexer/token.js";
 import { Catalog, DimInfo, JoinInfo, MeasureInfo, ModelInfo } from "./catalog.js";
 import {
   ColExpr,
+  ColRef,
   columnModelOf,
   Cond,
   DimPlan,
   FactPlan,
+  FunnelPlan,
+  RetentionPlan,
   hasSemiAdditive,
   JoinEdge,
   MetricCond,
@@ -191,6 +196,66 @@ export class Analyzer {
     };
   }
 
+  public analyzeFunnel(decl: FunnelDecl): FunnelPlan {
+    if (!this.catalog.models.has(decl.model)) {
+      throw new SemError(DiagCode.UnknownModel, `unknown model '${decl.model}'`, decl.modelSpan, closestName(decl.model, new Set(this.catalog.models.keys())));
+    }
+    if (decl.steps.length < 2) {
+      throw new SemError(DiagCode.InvalidDefinition, "a funnel needs at least two steps", decl.span);
+    }
+    const seen = new Set<string>();
+    for (const step of decl.steps) {
+      if (seen.has(step.name)) {
+        throw new SemError(DiagCode.DuplicateName, `duplicate funnel step '${step.name}'`, step.nameSpan);
+      }
+      seen.add(step.name);
+    }
+    const resolver = this.columnResolver(decl.model);
+    return {
+      model: decl.model,
+      entity: this.funnelColumn(decl.model, decl.entity, "entity key"),
+      time: this.funnelColumn(decl.model, decl.time, "time column"),
+      steps: decl.steps.map((step) => ({
+        name: step.name,
+        cond: this.resolveCond(this.expandSegments(decl.model, step.cond, new Set()), resolver)
+      }))
+    };
+  }
+
+  private funnelColumn(model: string, ref: RefExpr, role: string): ColRef {
+    if (ref.kind !== NodeKind.Ident) {
+      throw new SemError(DiagCode.TypeMismatch, `the funnel ${role} must be a plain column of '${model}'`, ref.span);
+    }
+    return { model, column: ref.name };
+  }
+
+  public analyzeRetention(decl: RetentionDecl): RetentionPlan {
+    if (!this.catalog.models.has(decl.model)) {
+      throw new SemError(DiagCode.UnknownModel, `unknown model '${decl.model}'`, decl.modelSpan, closestName(decl.model, new Set(this.catalog.models.keys())));
+    }
+    if (!Number.isInteger(decl.periods) || decl.periods < 1) {
+      throw new SemError(DiagCode.InvalidDefinition, "retention needs a whole number of periods of at least one", decl.periodsSpan);
+    }
+    const time = this.retentionTime(decl.model, decl.time);
+    return {
+      model: decl.model,
+      entity: this.funnelColumn(decl.model, decl.entity, "entity key"),
+      time: time.column,
+      grain: time.grain,
+      periods: decl.periods
+    };
+  }
+
+  private retentionTime(model: string, ref: RefExpr): { column: ColRef; grain: TimeGrain } {
+    if (ref.kind !== NodeKind.Member || ref.object.kind !== NodeKind.Ident) {
+      throw new SemError(DiagCode.TypeMismatch, `retention needs a time grain, e.g. 'occurred_at.month'`, ref.span);
+    }
+    if (!TIME_GRAINS.has(ref.name)) {
+      throw new SemError(DiagCode.UnknownGrain, `unknown time grain '${ref.name}'`, ref.nameSpan, closestName(ref.name, TIME_GRAINS));
+    }
+    return { column: { model, column: ref.object.name }, grain: ref.name as TimeGrain };
+  }
+
   private buildFilter(fact: FactPlan, where: Expr | undefined, options: AnalyzeOptions): Cond | undefined {
     const parts: Cond[] = [];
     const resolver = this.dimResolver(fact);
@@ -292,7 +357,9 @@ export class Analyzer {
         return this.buildPeriodToDate(kind, call, dims, base);
       case TransformKind.Share:
         this.requireAdditive(base, call, ReAgg.Sum, "share() sums the base across a partition");
-        return { kind, partition: this.sharePartition(call, dims) };
+        return { kind, partition: this.dimPartition(call, dims) };
+      case TransformKind.Of:
+        return { kind, combinator: this.windowCombinator(base, call), partition: this.dimPartition(call, dims) };
       default:
         throw new SemError(DiagCode.Unsupported, `unknown transform '${call.name}'`, call.nameSpan, closestName(call.name, TRANSFORM_NAMES));
     }
@@ -382,18 +449,18 @@ export class Analyzer {
     return Math.max(1, Math.round(days / grainDays));
   }
 
-  private sharePartition(call: TransformCall, dims: DimPlan[]): string[] {
+  private dimPartition(call: TransformCall, dims: DimPlan[]): string[] {
     const partition: string[] = [];
     for (const arg of call.args) {
       if (arg.kind !== "dim") {
-        throw new SemError(DiagCode.TypeMismatch, "share() partitions by dimensions, not a duration", arg.span);
+        throw new SemError(DiagCode.TypeMismatch, `${call.name}() partitions by dimensions, not a duration`, arg.span);
       }
       const name = arg.ref.name;
       const dim = dims.find((d) => d.outputName === name);
       if (dim === undefined) {
         throw new SemError(
           DiagCode.UnknownDimension,
-          `share(${name}) partitions by '${name}', which is not one of the 'by' dimensions`,
+          `${call.name}(${name}) partitions by '${name}', which is not one of the 'by' dimensions`,
           arg.span,
           closestName(name, dims.map((d) => d.outputName))
         );
@@ -1076,7 +1143,7 @@ export class Analyzer {
     while (cursor !== from) {
       const join = prev.get(cursor)!;
       if (FANOUT_CARDINALITIES.has(join.cardinality)) fanOut = true;
-      edges.push({ fromModel: join.fromModel, target: join.target, left: join.left, op: join.op, right: join.right });
+      edges.push({ fromModel: join.fromModel, target: join.target, left: join.left, op: join.op, right: join.right, asof: join.asof, span: join.span });
       cursor = join.fromModel;
     }
     edges.reverse();
@@ -1093,6 +1160,7 @@ export class Analyzer {
     for (const model of this.catalog.models.values()) {
       for (const join of model.joins) {
         push(join.fromModel, join);
+        if (join.asof !== undefined) continue;
         push(join.target, {
           fromModel: join.target,
           target: join.fromModel,
@@ -1163,6 +1231,14 @@ function parseDurationDays(text: string, span: Span): number {
 
 export function analyze(catalog: Catalog, query: QueryDecl, options?: AnalyzeOptions): Plan {
   return new Analyzer(catalog).analyze(query, options);
+}
+
+export function analyzeFunnel(catalog: Catalog, decl: FunnelDecl): FunnelPlan {
+  return new Analyzer(catalog).analyzeFunnel(decl);
+}
+
+export function analyzeRetention(catalog: Catalog, decl: RetentionDecl): RetentionPlan {
+  return new Analyzer(catalog).analyzeRetention(decl);
 }
 
 export type { ModelInfo };

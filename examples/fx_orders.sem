@@ -1,0 +1,51 @@
+# Cross-border commerce: orders priced in local currency, converted with the
+# exchange rate that was in effect when each order was placed (an as-of join),
+# plus typed money metrics and level-of-detail subtotals.
+
+model Orders {
+  table sales.orders
+  primary_key id
+
+  join Customers on customer_id = Customers.id (many_to_one)
+  join Rates on currency = Rates.currency asof placed_at >= Rates.as_of (many_to_one)
+
+  dimension currency: string
+  dimension region: string
+  dimension channel: string
+  dimension placed_at: time
+
+  measure gross_local : money = sum(amount)
+  measure order_count : count = count(id)
+
+  metric revenue_local = gross_local
+  metric orders        = order_count
+  metric aov_local     = revenue_local / orders
+}
+
+model Customers {
+  table sales.customers
+  primary_key id
+
+  dimension tier: string
+  dimension country: string
+}
+
+model Rates {
+  table sales.fx_rates
+  primary_key id
+
+  dimension currency: string
+  dimension as_of: time
+  dimension rate_band: string
+}
+
+materialize revenue_by_region as
+  show revenue_local by region
+
+assert revenue_local where region = 'APAC' between 0 and 100000000
+
+# Sample queries:
+#   show revenue_local, aov_local by region
+#   show revenue_local by Rates.rate_band              # as-of: the rate in effect at order time
+#   show revenue_local, revenue_local.of(region) by region, channel   # region subtotal beside the detail
+#   show revenue_local by Customers.tier               # joined dimension

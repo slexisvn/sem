@@ -72,6 +72,42 @@ describe("phase 2 metric transforms → window functions", () => {
   });
 });
 
+describe("level-of-detail: .of re-aggregates a metric to a coarser grain", () => {
+  test("of(dim) is the base subtotal broadcast across the other dimensions", () => {
+    const { sql } = run("show revenue.of(region) by region, status");
+    expect(sql).toContain("SUM(grid.revenue) OVER (PARTITION BY region) AS revenue_of");
+  });
+
+  test("the detail and its subtotal come back as separate columns for comparison", () => {
+    const { sql } = run("show revenue, revenue.of(region) by region, status");
+    expect(sql).toContain("grid.revenue AS revenue");
+    expect(sql).toContain("SUM(grid.revenue) OVER (PARTITION BY region) AS revenue_of");
+  });
+
+  test("of() with no dimension is the grand total", () => {
+    const { sql } = run("show revenue.of() by region, status");
+    expect(sql).toContain("SUM(grid.revenue) OVER () AS revenue_of");
+  });
+
+  test("the subtotal follows the base's own re-aggregation, not always sum", () => {
+    const { sql } = run("show peak.of(region) by region, status");
+    expect(sql).toContain("MAX(grid.peak) OVER (PARTITION BY region) AS peak_of");
+  });
+
+  test("a non-additive base cannot form a subtotal", () => {
+    expect(() => run("show avg_amount.of(region) by ordered_at.month, region")).toThrowError(SemError);
+  });
+
+  test("of() only partitions by dimensions that are in the by-list", () => {
+    expect(() => run("show revenue.of(status) by region")).toThrowError(/not one of the 'by' dimensions/);
+  });
+
+  test("of() does not build a date spine because it has no series", () => {
+    const { sql } = run("show revenue.of(region) by region, status");
+    expect(sql).not.toContain("spine AS (");
+  });
+});
+
 describe("windowed transforms partition non-time dimensions", () => {
   test("a second dimension becomes the window partition so series do not bleed together", () => {
     const { sql } = run("show revenue.mom by ordered_at.month, region");
@@ -130,6 +166,19 @@ describe("period-to-date transforms reset a running total at period boundaries",
 
   test("the grain must be finer than the period", () => {
     expect(() => run("show revenue.mtd by ordered_at.month")).toThrowError(/finer than 'month'/);
+  });
+
+  test("qtd accepts a month grain because a month is finer than a quarter", () => {
+    expect(run("show revenue.qtd by ordered_at.month").sql).toContain("PARTITION BY DATE_TRUNC('quarter', ordered_at_month)");
+  });
+
+  test("ytd accepts a quarter grain", () => {
+    expect(run("show revenue.ytd by ordered_at.quarter").sql).toContain("PARTITION BY DATE_TRUNC('year', ordered_at_quarter)");
+  });
+
+  test("a grain equal to the period is rejected", () => {
+    expect(() => run("show revenue.qtd by ordered_at.quarter")).toThrowError(/finer than 'quarter'/);
+    expect(() => run("show revenue.ytd by ordered_at.year")).toThrowError(/finer than 'year'/);
   });
 
   test("a non-additive base cannot run a period-to-date total", () => {

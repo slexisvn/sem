@@ -57,4 +57,5 @@ assert aov where region = 'VN' between 20 and 60
 #   show buyers by Customers.tier                      # distinct count, joined dimension
 #   show revenue by Items.sku                          # fan-out: dedup on order id before summing
 #   show revenue.share by region                       # each region's share of total
+#   show revenue, revenue.of(region) by region, status # region subtotal beside each status
 #   show revenue.yoy by ordered_at.month, region       # per-region year-over-year on a dense date spine

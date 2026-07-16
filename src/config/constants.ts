@@ -59,12 +59,15 @@ export enum TransformKind {
   Rolling = "rolling",
   Cumulative = "cumulative",
   Share = "share",
+  Of = "of",
   Mtd = "mtd",
   Qtd = "qtd",
   Ytd = "ytd"
 }
 
 export const TRANSFORM_NAMES: ReadonlySet<string> = new Set<string>(Object.values(TransformKind));
+
+export const SERIESLESS_TRANSFORMS: ReadonlySet<TransformKind> = new Set([TransformKind.Share, TransformKind.Of]);
 
 export const PERIOD_TO_DATE_GRAIN: ReadonlyMap<TransformKind, TimeGrain> = new Map([
   [TransformKind.Mtd, TimeGrain.Month],
@@ -102,6 +105,7 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["primary_key", TokKind.PrimaryKey],
   ["join", TokKind.Join],
   ["on", TokKind.On],
+  ["asof", TokKind.Asof],
   ["dimension", TokKind.Dimension],
   ["measure", TokKind.Measure],
   ["metric", TokKind.Metric],
@@ -119,6 +123,11 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["restrict", TokKind.Restrict],
   ["materialize", TokKind.Materialize],
   ["as", TokKind.As],
+  ["funnel", TokKind.Funnel],
+  ["steps", TokKind.Steps],
+  ["over", TokKind.Over],
+  ["retention", TokKind.Retention],
+  ["periods", TokKind.Periods],
   ["and", TokKind.And],
   ["or", TokKind.Or],
   ["not", TokKind.Not],
@@ -127,6 +136,13 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["like", TokKind.Like],
   ["true", TokKind.True],
   ["false", TokKind.False]
+]);
+
+export const ASOF_ORDER: ReadonlyMap<CmpOp, "asc" | "desc"> = new Map([
+  [CmpOp.Gte, "desc"],
+  [CmpOp.Gt, "desc"],
+  [CmpOp.Lte, "asc"],
+  [CmpOp.Lt, "asc"]
 ]);
 
 export const AGG_FUNCS: ReadonlySet<string> = new Set<string>(Object.values(AggFunc));
@@ -146,6 +162,18 @@ export const DEDUP_KEY_ALIAS = "__pk";
 export const DEDUP_VALUE_PREFIX = "__v";
 export const SEMI_ORDER_PREFIX = "__o";
 export const SEMI_WINDOW_PREFIX = "__w";
+export const FUNNEL_CTE = "funnel";
+export const FUNNEL_STEP_PREFIX = "__s";
+export const FUNNEL_ENTITY_ALIAS = "__entity";
+export const RETENTION_EVENTS_CTE = "cohort_events";
+export const RETENTION_COHORT_CTE = "cohorts";
+export const RETENTION_ACTIVITY_CTE = "activity";
+export const RETENTION_ENTITY = "__e";
+export const RETENTION_PERIOD = "__p";
+export const RETENTION_COHORT = "__c";
+export const RETENTION_OFFSET = "__k";
+export const RETENTION_COHORT_COL = "cohort";
+export const RETENTION_PERIOD_PREFIX = "period_";
 export const GRID_CTE = "grid";
 export const SPINE_CTE = "spine";
 export const DENSE_CTE = "dense";

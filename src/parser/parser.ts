@@ -1,5 +1,9 @@
 import {
   AggOverride,
+  AsOfClause,
+  FunnelDecl,
+  FunnelStep,
+  RetentionDecl,
   AssertDecl,
   AssertExpectation,
   BetweenExpr,
@@ -156,6 +160,62 @@ export class Parser {
     const start = this.peek().span;
     this.expect(TokKind.Show, "'show'");
     return this.parseQueryAfterShow(start, true);
+  }
+
+  public parseFunnel(): FunnelDecl {
+    const start = this.peek().span;
+    this.expect(TokKind.Funnel, "'funnel'");
+    const modelTok = this.expect(TokKind.Ident, "an event model");
+    this.expect(TokKind.By, "'by' before the entity key");
+    const entity = this.parseRef();
+    this.expect(TokKind.Over, "'over' before the time column");
+    const time = this.parseRef();
+    this.expect(TokKind.Steps, "'steps'");
+    const steps: FunnelStep[] = [this.parseFunnelStep()];
+    while (this.at(TokKind.Comma)) {
+      this.next();
+      steps.push(this.parseFunnelStep());
+    }
+    this.expect(TokKind.Eof, "end of funnel");
+    return {
+      kind: NodeKind.Funnel,
+      model: modelTok.text,
+      modelSpan: modelTok.span,
+      entity,
+      time,
+      steps,
+      span: this.spanFrom(start)
+    };
+  }
+
+  private parseFunnelStep(): FunnelStep {
+    const nameTok = this.expect(TokKind.Ident, "a step name");
+    this.expect(TokKind.Eq, "'=' after the step name");
+    const cond = this.parseExpr(0);
+    return { name: nameTok.text, nameSpan: nameTok.span, cond };
+  }
+
+  public parseRetention(): RetentionDecl {
+    const start = this.peek().span;
+    this.expect(TokKind.Retention, "'retention'");
+    const modelTok = this.expect(TokKind.Ident, "an event model");
+    this.expect(TokKind.By, "'by' before the entity key");
+    const entity = this.parseRef();
+    this.expect(TokKind.Over, "'over' before the time grain");
+    const time = this.parseRef();
+    this.expect(TokKind.Periods, "'periods'");
+    const periodsTok = this.expect(TokKind.Number, "a number of periods");
+    this.expect(TokKind.Eof, "end of retention");
+    return {
+      kind: NodeKind.Retention,
+      model: modelTok.text,
+      modelSpan: modelTok.span,
+      entity,
+      time,
+      periods: periodsTok.value as number,
+      periodsSpan: periodsTok.span,
+      span: this.spanFrom(start)
+    };
   }
 
   private parseQueryAfterShow(start: Span, expectEof: boolean): QueryDecl {
@@ -325,6 +385,7 @@ export class Parser {
     const left = this.parseRef();
     const op = this.parseComparisonOp();
     const right = this.parseRef();
+    const asof = this.at(TokKind.Asof) ? this.parseAsOf() : undefined;
     this.expect(TokKind.LParen, "'(' before cardinality");
     const cardinality = this.expect(TokKind.Ident, "a cardinality").text;
     this.expect(TokKind.RParen, "')' after cardinality");
@@ -335,9 +396,19 @@ export class Parser {
       left,
       op,
       right,
+      asof,
       cardinality,
       span: this.spanFrom(start)
     };
+  }
+
+  private parseAsOf(): AsOfClause {
+    const start = this.peek().span;
+    this.expect(TokKind.Asof, "'asof'");
+    const left = this.parseRef();
+    const op = this.parseComparisonOp();
+    const right = this.parseRef();
+    return { left, op, right, span: this.spanFrom(start) };
   }
 
   private parseComparisonOp(): BinaryOp {
@@ -839,4 +910,12 @@ export function parseProgram(source: string): Program {
 
 export function parseQuery(source: string): QueryDecl {
   return new Parser(tokenize(source)).parseQuery();
+}
+
+export function parseFunnel(source: string): FunnelDecl {
+  return new Parser(tokenize(source)).parseFunnel();
+}
+
+export function parseRetention(source: string): RetentionDecl {
+  return new Parser(tokenize(source)).parseRetention();
 }

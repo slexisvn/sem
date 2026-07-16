@@ -43,6 +43,8 @@ const TOC: Array<{ id: string; label: string }> = [
   { id: "types", label: "Types & additivity" },
   { id: "query", label: "Queries" },
   { id: "transforms", label: "Time transforms" },
+  { id: "funnel", label: "Funnels" },
+  { id: "retention", label: "Retention" },
   { id: "policies", label: "Policies" },
   { id: "materialize", label: "Materialize & assert" },
   { id: "dialects", label: "Dialects" },
@@ -151,6 +153,18 @@ join Items     on id = Items.order_id       (one_to_many)`}</Code>
             <code>one_to_many</code> (or <code>many_to_many</code>) join, naïve SQL would double-count
             rows. sem detects this and deduplicates on the primary key before summing, so{" "}
             <code>show revenue by Items.sku</code> stays correct even though each order has many items.
+          </p>
+          <p>
+            <strong>As-of joins.</strong> Add an <code>asof</code> match to line each fact row up with
+            the row of a slowly-changing table that was in effect at the fact's timestamp — an exchange
+            rate, a price, a plan tier. The fact timestamp goes on the left of the match.
+          </p>
+          <Code>{`join Rates on currency = Rates.currency asof ordered_at >= Rates.as_of (many_to_one)`}</Code>
+          <p>
+            <code>&gt;=</code> takes the latest row at or before the fact; <code>&lt;=</code> takes the
+            earliest at or after. sem compiles this to a lateral <code>ORDER BY … LIMIT 1</code> lookup,
+            so there is exactly one match and no fan-out. An as-of edge is one-directional. Dialects
+            without lateral joins report the query as unsupported rather than emitting a wrong result.
           </p>
         </Section>
 
@@ -315,7 +329,8 @@ show revenue.rolling(90d) by ordered_at.day         # 90-day rolling window
 show events.cumulative by occurred_at.day           # running total
 show revenue.mtd by ordered_at.day                  # month-to-date running total
 show revenue.ytd by ordered_at.month                # year-to-date running total
-show revenue.share by region                        # each group's share of total`}</Code>
+show revenue.share by region                        # each group's share of total
+show revenue.of(region) by region, status           # region subtotal beside each status`}</Code>
           <table className="docs__table">
             <thead>
               <tr><th>Transform</th><th>Meaning</th></tr>
@@ -327,12 +342,51 @@ show revenue.share by region                        # each group's share of tota
               <tr><td><code>.cumulative</code></td><td>Running total from the start of the series.</td></tr>
               <tr><td><code>.mtd / .qtd / .ytd</code></td><td>Running total that resets each month / quarter / year. Needs a finer grain in <code>by</code>.</td></tr>
               <tr><td><code>.share</code></td><td>The group's fraction of the overall total.</td></tr>
+              <tr><td><code>.of(dims)</code></td><td>The base re-aggregated to a coarser grain (a subtotal), shown as its own column beside the detail; <code>.of()</code> is the grand total.</td></tr>
             </tbody>
           </table>
           <p className="docs__note">
             Duration units for <code>rolling</code>: <code>d</code> (day), <code>w</code> (week),{" "}
             <code>m</code> (month), <code>q</code> (quarter), <code>y</code> (year) — e.g.{" "}
             <code>rolling(7d)</code>, <code>rolling(1y)</code>.
+          </p>
+        </Section>
+
+        <Section id="funnel" title="Funnels">
+          <p>
+            A <code>funnel</code> counts how many entities moved through an ordered sequence of steps.
+            Name the event model, the entity key, the time column, and two or more named steps — each
+            step is a condition, and it must occur no earlier than the step before it.
+          </p>
+          <Code>{`funnel Events by user_id over occurred_at
+  steps viewed    = event = 'view',
+        carted    = event = 'add_to_cart',
+        purchased = event = 'purchase'`}</Code>
+          <p>
+            sem compiles this to a per-entity first-occurrence timestamp for each step, then counts the
+            entities whose timestamps are monotonic. Steps can reuse <a href="#segments">segments</a>.
+            The output is one row: a count column per step. Because it only uses grouped{" "}
+            <code>MIN</code> and conditional <code>SUM</code>, it runs on every dialect.
+          </p>
+          <p className="docs__note">
+            Ordering is based on each step's <em>first</em> occurrence, so the funnel is a first-touch
+            approximation rather than a strict per-event sequence.
+          </p>
+        </Section>
+
+        <Section id="retention" title="Retention">
+          <p>
+            A <code>retention</code> query groups entities into cohorts by the first period they
+            appear in, then counts how many are still active at each later period. Name the event
+            model, the entity key, a time column <em>with a grain</em>, and how many periods to track.
+          </p>
+          <Code>{`retention Events by user_id over signed_up_at.month periods 6`}</Code>
+          <p>
+            The result is a matrix: one row per cohort period, and a <code>period_0</code> …{" "}
+            <code>period_6</code> column counting the distinct entities active that many periods after
+            their cohort start. <code>period_0</code> is the cohort size. sem computes the period
+            distance for the chosen grain, so a dialect without that primitive reports the query as
+            unsupported rather than guessing.
           </p>
         </Section>
 
@@ -376,7 +430,7 @@ const sql = compile(schemaSource, "show revenue by region", {
 model <Name> {
   table <name | schema.name>
   primary_key <column>
-  join <Model> on <cond> (<cardinality>)
+  join <Model> on <cond> [asof <fact_ts> <op> <target_ts>] (<cardinality>)
   dimension <name>: <string|number|boolean|time>
   measure <name> [: <unit>] [<additivity>] = <agg>(<column>)
   metric  <name> = <measure | metric expr> [where <filter>]
@@ -395,12 +449,19 @@ show <metric[.transform]> , ...
   [order by <metric> [asc|desc]]
   [top <n>]
 
+# --- funnel ---
+funnel <Model> by <entity> over <time>
+  steps <name> = <filter> , ...
+
+# --- retention ---
+retention <Model> by <entity> over <time>.<grain> periods <n>
+
 # aggregates    sum count avg min max median percentile(col,p)  (+ count(distinct ..))
 # units         money count time <name>  combined with * and /
 # additivity    non_additive | semi_additive(last|first by <dim>)
 # cardinalities many_to_one one_to_many one_to_one many_to_many
 # grains        day week month quarter year
-# transforms    mom yoy rolling(Nd) cumulative mtd qtd ytd share
+# transforms    mom yoy rolling(Nd) cumulative mtd qtd ytd share of(dims)
 # operators     = != < <= > >=  and or not  in between like
 # comments      lines starting with #`}</Code>
         </Section>
