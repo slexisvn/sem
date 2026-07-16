@@ -1,5 +1,5 @@
 {
-  "name": "sem",
+  "name": "@slexisvn/sem",
   "version": "0.1.0",
   "description": "A semantic-layer DSL that compiles to SQL text",
   "type": "module",
@@ -17,8 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "web:dev": "vite --config web/vite.config.ts",
-    "web:build": "vite build --config web/vite.config.ts",
-    "web:preview": "vite preview --config web/vite.config.ts"
+    "web:build": "vite build --config web/vite.config.ts"
   },
   "keywords": [
     "semantic-layer",
@@ -29,6 +28,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^20.19.43",
     "@types/prismjs": "^1.26.6",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",

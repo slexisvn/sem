@@ -49,7 +49,7 @@ function splitGrid(text: string, delimiter: string): string[][] {
 function coerce(raw: string): Cell {
   const value = raw.trim();
   const lower = value.toLowerCase();
-  if (CSV.nullTokens.includes(lower)) return null;
+  if ((CSV.nullTokens as readonly string[]).includes(lower)) return null;
   if (lower in CSV.booleanTokens) return CSV.booleanTokens[lower];
   if (CSV.numberPattern.test(value)) {
     const n = Number(value);

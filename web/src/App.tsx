@@ -7,11 +7,15 @@ import { DataPanel } from "./components/DataPanel.js";
 import { SqlPanel } from "./components/SqlPanel.js";
 import { ResultTable } from "./components/ResultTable.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { Docs } from "./components/Docs.js";
+
+type View = "play" | "docs";
 
 export function App() {
   const pg = usePlayground();
   const editorStackRef = useRef<HTMLDivElement>(null);
   const [sqlHeight, setSqlHeight] = useState<number>();
+  const [view, setView] = useState<View>("play");
 
   useLayoutEffect(() => {
     const element = editorStackRef.current;
@@ -32,8 +36,28 @@ export function App() {
           <h1>{LABELS.title}</h1>
           <p className="muted">{LABELS.subtitle}</p>
         </div>
+        <nav className="app__nav" aria-label="View">
+          <button
+            type="button"
+            className={`tab ${view === "play" ? "tab--active" : ""}`}
+            onClick={() => setView("play")}
+          >
+            Playground
+          </button>
+          <button
+            type="button"
+            className={`tab ${view === "docs" ? "tab--active" : ""}`}
+            onClick={() => setView("docs")}
+          >
+            Docs
+          </button>
+        </nav>
       </header>
 
+      {view === "docs" ? (
+        <Docs />
+      ) : (
+        <>
       <StatusBar status={pg.status} />
 
       <div className="grid">
@@ -59,6 +83,8 @@ export function App() {
           <ResultTable result={pg.result} onRun={pg.run} busy={pg.busy} canRun={Boolean(pg.compiled)} />
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

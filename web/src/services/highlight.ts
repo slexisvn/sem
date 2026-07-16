@@ -1,5 +1,6 @@
 import Prism from "prismjs";
 import "prismjs/components/prism-sql";
+import "prismjs/components/prism-javascript";
 
 Prism.languages.sem = {
   comment: /#.*/,
@@ -23,7 +24,7 @@ Prism.languages.sem = {
   punctuation: /[{}()[\],.:]/,
 };
 
-export type HighlightLanguage = "sem" | "sql";
+export type HighlightLanguage = "sem" | "sql" | "javascript";
 
 export function highlightCode(code: string, language: HighlightLanguage): string {
   return Prism.highlight(code, Prism.languages[language], language);
