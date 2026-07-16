@@ -93,6 +93,14 @@ export const GRAIN_DAYS: ReadonlyMap<TimeGrain, number> = new Map([
   [TimeGrain.Year, 365]
 ]);
 
+export const GRAIN_ROLLUP: ReadonlyMap<TimeGrain, ReadonlySet<TimeGrain>> = new Map([
+  [TimeGrain.Day, new Set([TimeGrain.Day, TimeGrain.Week, TimeGrain.Month, TimeGrain.Quarter, TimeGrain.Year])],
+  [TimeGrain.Week, new Set([TimeGrain.Week])],
+  [TimeGrain.Month, new Set([TimeGrain.Month, TimeGrain.Quarter, TimeGrain.Year])],
+  [TimeGrain.Quarter, new Set([TimeGrain.Quarter, TimeGrain.Year])],
+  [TimeGrain.Year, new Set([TimeGrain.Year])]
+]);
+
 export const GRAIN_PERIODS_PER_YEAR: ReadonlyMap<TimeGrain, number> = new Map([
   [TimeGrain.Day, 365],
   [TimeGrain.Week, 52],
@@ -105,6 +113,7 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["model", TokKind.Model],
   ["table", TokKind.Table],
   ["primary_key", TokKind.PrimaryKey],
+  ["timezone", TokKind.Timezone],
   ["join", TokKind.Join],
   ["on", TokKind.On],
   ["asof", TokKind.Asof],

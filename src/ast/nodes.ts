@@ -168,6 +168,8 @@ export interface ModelDecl {
   readonly nameSpan: Span;
   readonly table: string;
   readonly primaryKey: string;
+  readonly timezone?: string;
+  readonly timezoneSpan?: Span;
   readonly joins: JoinDecl[];
   readonly dimensions: DimensionDecl[];
   readonly measures: MeasureDecl[];

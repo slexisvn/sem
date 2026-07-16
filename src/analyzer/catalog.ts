@@ -3,11 +3,13 @@ import {
   DimensionDecl,
   Expr,
   JoinDecl,
+  MaterializeDecl,
   MeasureDecl,
   MetricDecl,
   ModelDecl,
   NodeKind,
   PolicyDecl,
+  QueryDecl,
   RefExpr,
   SegmentDecl
 } from "../ast/nodes.js";
@@ -64,6 +66,7 @@ export interface ModelInfo {
   readonly name: string;
   readonly table: string;
   readonly primaryKey: string;
+  readonly timezone?: string;
   readonly dims: Map<string, DimInfo>;
   readonly measures: Map<string, MeasureInfo>;
   readonly metrics: Map<string, MetricInfo>;
@@ -71,6 +74,8 @@ export interface ModelInfo {
   readonly joins: JoinInfo[];
   readonly span: Span;
 }
+
+const TIMEZONE_NAME = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/;
 
 const CMP_TEXT_TO_OP: ReadonlyMap<string, CmpOp> = new Map([
   ["=", CmpOp.Eq],
@@ -88,18 +93,46 @@ export interface PolicyInfo {
   readonly span: Span;
 }
 
+export interface MaterializationInfo {
+  readonly name: string;
+  readonly table: string;
+  readonly query: QueryDecl;
+  readonly span: Span;
+}
+
 export class Catalog {
   public readonly models = new Map<string, ModelInfo>();
   public readonly metricIndex = new Map<string, string[]>();
   public readonly measureIndex = new Map<string, string[]>();
   public readonly policies = new Map<string, PolicyInfo[]>();
+  public readonly materializations = new Map<string, MaterializationInfo>();
 
-  public static build(decls: ModelDecl[], policies: PolicyDecl[] = []): Catalog {
+  public static build(
+    decls: ModelDecl[],
+    policies: PolicyDecl[] = [],
+    materializes: MaterializeDecl[] = []
+  ): Catalog {
     const catalog = new Catalog();
     for (const decl of decls) catalog.addModel(decl);
     for (const decl of decls) catalog.linkJoins(decl);
     for (const policy of policies) catalog.addPolicy(policy);
+    for (const decl of materializes) catalog.addMaterialization(decl);
     return catalog;
+  }
+
+  public tableOf(name: string): string {
+    const model = this.models.get(name);
+    if (model !== undefined) return model.table;
+    const materialization = this.materializations.get(name);
+    if (materialization !== undefined) return materialization.table;
+    throw new SemError(DiagCode.UnknownModel, `unknown model '${name}'`, undefined, closest(name, this.models.keys()));
+  }
+
+  private addMaterialization(decl: MaterializeDecl): void {
+    if (this.models.has(decl.name) || this.materializations.has(decl.name)) {
+      throw new SemError(DiagCode.DuplicateName, `name '${decl.name}' is defined more than once`, decl.nameSpan);
+    }
+    this.materializations.set(decl.name, { name: decl.name, table: decl.name, query: decl.query, span: decl.span });
   }
 
   public policiesFor(model: string): PolicyInfo[] {
@@ -151,6 +184,7 @@ export class Catalog {
       name: decl.name,
       table: decl.table,
       primaryKey: decl.primaryKey,
+      timezone: this.checkTimezone(decl),
       dims,
       measures,
       metrics,
@@ -158,6 +192,18 @@ export class Catalog {
       joins: [],
       span: decl.span
     });
+  }
+
+  private checkTimezone(decl: ModelDecl): string | undefined {
+    if (decl.timezone === undefined) return undefined;
+    if (!TIMEZONE_NAME.test(decl.timezone)) {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `'${decl.timezone}' is not a valid timezone name; use an IANA name such as 'Asia/Ho_Chi_Minh' or 'UTC'`,
+        decl.timezoneSpan
+      );
+    }
+    return decl.timezone;
   }
 
   private addSegment(

@@ -1,5 +1,5 @@
 import { TimeGrain } from "../config/constants.js";
-import { BaseDialect } from "./dialect.js";
+import { BaseDialect, quoteZone } from "./dialect.js";
 
 export class BigQueryDialect extends BaseDialect {
   public readonly name = "bigquery";
@@ -12,8 +12,9 @@ export class BigQueryDialect extends BaseDialect {
     return "?";
   }
 
-  public truncTime(grain: TimeGrain, expr: string): string {
-    return `DATE_TRUNC(${expr}, ${grain.toUpperCase()})`;
+  public truncTime(grain: TimeGrain, expr: string, tz?: string): string {
+    if (tz === undefined) return `DATE_TRUNC(${expr}, ${grain.toUpperCase()})`;
+    return `TIMESTAMP_TRUNC(${expr}, ${grain.toUpperCase()}, ${quoteZone(tz)})`;
   }
 
   public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {

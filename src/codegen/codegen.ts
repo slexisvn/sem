@@ -9,15 +9,17 @@ import {
   FunnelPlan,
   RetentionPlan,
   hasSemiAdditive,
+  isValue,
   JoinEdge,
   MetricCond,
   MExpr,
   modelSet,
   Plan,
   SelectMetric,
+  sigCol,
+  signature,
   SqlResult,
-  TransformIR,
-  ValueRef
+  TransformIR
 } from "../analyzer/ir.js";
 import {
   AggFunc,
@@ -133,7 +135,7 @@ export class Generator {
     if (this.dialect.periodDiff === undefined) {
       throw new SemError(DiagCode.Unsupported, `dialect '${this.dialect.name}' does not support retention`);
     }
-    const period = this.dialect.truncTime(plan.grain, this.renderColRef(plan.time));
+    const period = this.dialect.truncTime(plan.grain, this.renderColRef(plan.time), plan.tz);
     const events = [
       `SELECT ${this.renderColRef(plan.entity)} AS ${RETENTION_ENTITY}, ${period} AS ${RETENTION_PERIOD}`,
       `FROM ${this.tableRef(plan.model)}`
@@ -284,7 +286,7 @@ export class Generator {
   }
 
   private tableOf(model: string): string {
-    return this.catalog.models.get(model)!.table;
+    return this.catalog.tableOf(model);
   }
 
   private tableRef(model: string): string {
@@ -537,7 +539,7 @@ export class Generator {
 
   private renderDim(dim: DimPlan, model: string, params: ParamBag): string {
     const base = this.renderColExpr(dim.perFact.get(model)!, params);
-    return dim.grain !== undefined ? this.dialect.truncTime(dim.grain, base) : base;
+    return dim.grain !== undefined ? this.dialect.truncTime(dim.grain, base, dim.tz) : base;
   }
 
   private renderMExpr(node: MExpr, params: ParamBag): string {
@@ -617,7 +619,7 @@ export class Generator {
       case "num":
         return String(expr.value);
       case "trunc":
-        return this.dialect.truncTime(expr.grain, this.renderColExpr(expr.arg, params));
+        return this.dialect.truncTime(expr.grain, this.renderColExpr(expr.arg, params), expr.tz);
       case "bin":
         return this.renderArith(expr.op, this.renderColExpr(expr.left, params), this.renderColExpr(expr.right, params));
     }
@@ -630,53 +632,6 @@ export class Generator {
   private renderArith(op: ArithOp, left: string, right: string): string {
     if (op === ArithOp.Div) return `(${left} / NULLIF(${right}, 0))`;
     return `(${left} ${op} ${right})`;
-  }
-}
-
-function isValue(node: ColExpr | ValueRef): node is ValueRef {
-  return node.k === "param";
-}
-
-function signature(node: MExpr): string {
-  switch (node.k) {
-    case "agg":
-      return `${node.func}${node.quantile !== undefined ? ":" + node.quantile : ""}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
-    case "bin":
-      return `(${signature(node.left)}${node.op}${signature(node.right)})`;
-    case "num":
-      return `#${node.value}`;
-  }
-}
-
-function sigCol(expr: ColExpr): string {
-  switch (expr.k) {
-    case "col":
-      return `${expr.ref.model}.${expr.ref.column}`;
-    case "num":
-      return `#${expr.value}`;
-    case "trunc":
-      return `${expr.grain}(${sigCol(expr.arg)})`;
-    case "bin":
-      return `(${sigCol(expr.left)}${expr.op}${sigCol(expr.right)})`;
-  }
-}
-
-function sigCond(cond: Cond): string {
-  switch (cond.k) {
-    case "cmp":
-      return `${sigCol(cond.left)}${cond.op}${isValue(cond.right) ? "$" + String(cond.right.value) : sigCol(cond.right)}`;
-    case "and":
-      return `and(${sigCond(cond.left)},${sigCond(cond.right)})`;
-    case "or":
-      return `or(${sigCond(cond.left)},${sigCond(cond.right)})`;
-    case "not":
-      return `not(${sigCond(cond.operand)})`;
-    case "in":
-      return `in(${sigCol(cond.left)},${cond.values.map((v) => String(v.value)).join(",")})`;
-    case "between":
-      return `bt(${sigCol(cond.left)},${String(cond.lo.value)},${String(cond.hi.value)})`;
-    case "like":
-      return `like(${sigCol(cond.left)},${String(cond.pattern.value)})`;
   }
 }
 

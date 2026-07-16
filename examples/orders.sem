@@ -1,6 +1,7 @@
 model Orders {
   table public.orders
   primary_key id
+  timezone 'Asia/Ho_Chi_Minh'
 
   join Customers on customer_id = Customers.id (many_to_one)
   join Items on id = Items.order_id (one_to_many)
@@ -49,6 +50,9 @@ policy analyst_vn on Orders restrict region = 'VN'
 materialize monthly_revenue as
   show revenue, revenue.mom, revenue.rolling(90d) by ordered_at.month
 
+materialize daily_orders as
+  show revenue, net_revenue, orders, aov, largest by region, status, ordered_at.day
+
 assert revenue where ordered_at.month = '2026-01' == 1250000
 assert aov where region = 'VN' between 20 and 60
 
@@ -59,3 +63,12 @@ assert aov where region = 'VN' between 20 and 60
 #   show revenue.share by region                       # each region's share of total
 #   show revenue, revenue.of(region) by region, status # region subtotal beside each status
 #   show revenue.yoy by ordered_at.month, region       # per-region year-over-year on a dense date spine
+#
+# These are answered from the daily_orders pre-aggregate instead of public.orders
+# (it bakes in the analyst_vn policy, so it serves queries running under it):
+#   show revenue by region                             # SUM over the daily rows
+#   show revenue by ordered_at.month                   # days re-truncated up to months
+#   show largest by region                             # MAX of daily maxes is the max
+# ...but this one is refused and re-read from the fact table, because an average
+# of averages is not an average:
+#   show aov by region

@@ -1,5 +1,7 @@
 import { TimeGrain } from "../config/constants.js";
-import { BaseDialect, lateralAsOf } from "./dialect.js";
+import { BaseDialect, lateralAsOf, quoteZone } from "./dialect.js";
+
+const UTC = "'UTC'";
 
 export class MySqlDialect extends BaseDialect {
   public readonly name = "mysql";
@@ -12,18 +14,19 @@ export class MySqlDialect extends BaseDialect {
     return "?";
   }
 
-  public truncTime(grain: TimeGrain, expr: string): string {
+  public truncTime(grain: TimeGrain, expr: string, tz?: string): string {
+    const local = tz === undefined ? expr : `CONVERT_TZ(${expr}, ${UTC}, ${quoteZone(tz)})`;
     switch (grain) {
       case TimeGrain.Day:
-        return `DATE(${expr})`;
+        return `DATE(${local})`;
       case TimeGrain.Week:
-        return `STR_TO_DATE(CONCAT(YEARWEEK(${expr}, 3), ' Monday'), '%X%V %W')`;
+        return `STR_TO_DATE(CONCAT(YEARWEEK(${local}, 3), ' Monday'), '%X%V %W')`;
       case TimeGrain.Month:
-        return `DATE_FORMAT(${expr}, '%Y-%m-01')`;
+        return `DATE_FORMAT(${local}, '%Y-%m-01')`;
       case TimeGrain.Quarter:
-        return `STR_TO_DATE(CONCAT(YEAR(${expr}), '-', LPAD(((QUARTER(${expr}) - 1) * 3 + 1), 2, '0'), '-01'), '%Y-%m-%d')`;
+        return `STR_TO_DATE(CONCAT(YEAR(${local}), '-', LPAD(((QUARTER(${local}) - 1) * 3 + 1), 2, '0'), '-01'), '%Y-%m-%d')`;
       case TimeGrain.Year:
-        return `DATE_FORMAT(${expr}, '%Y-01-01')`;
+        return `DATE_FORMAT(${local}, '%Y-01-01')`;
     }
   }
 

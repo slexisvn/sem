@@ -32,6 +32,12 @@ export const REAGG_SQL: ReadonlyMap<ReAgg, string> = new Map([
   [ReAgg.Max, "MAX"]
 ]);
 
+export const REAGG_FUNC: ReadonlyMap<ReAgg, AggFunc> = new Map([
+  [ReAgg.Sum, AggFunc.Sum],
+  [ReAgg.Min, AggFunc.Min],
+  [ReAgg.Max, AggFunc.Max]
+]);
+
 export const DISTINCT_KEYWORD = "distinct";
 
 export function aggAllowsDistinct(func: AggFunc): boolean {

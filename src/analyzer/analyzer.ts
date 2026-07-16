@@ -117,6 +117,7 @@ interface DimResolution {
   readonly colExpr: ColExpr;
   readonly type: DimType;
   readonly grain?: TimeGrain;
+  readonly tz?: string;
   readonly outputName: string;
 }
 
@@ -242,6 +243,7 @@ export class Analyzer {
       entity: this.funnelColumn(decl.model, decl.entity, "entity key"),
       time: time.column,
       grain: time.grain,
+      tz: this.catalog.models.get(decl.model)!.timezone,
       periods: decl.periods
     };
   }
@@ -807,7 +809,7 @@ export class Analyzer {
       const resolution = this.resolveDim(fact, ref);
       const colExpr =
         resolution.grain !== undefined
-          ? ({ k: "trunc", grain: resolution.grain, arg: resolution.colExpr } as ColExpr)
+          ? ({ k: "trunc", grain: resolution.grain, arg: resolution.colExpr, tz: resolution.tz } as ColExpr)
           : resolution.colExpr;
       return { colExpr, type: resolution.type };
     };
@@ -976,6 +978,7 @@ export class Analyzer {
     let outputName: string | undefined;
     let type: DimType | undefined;
     let grain: TimeGrain | undefined;
+    let tz: string | undefined;
 
     for (const fact of facts) {
       const resolution = this.resolveDim(fact, ref);
@@ -983,17 +986,24 @@ export class Analyzer {
         outputName = resolution.outputName;
         type = resolution.type;
         grain = resolution.grain;
+        tz = resolution.tz;
       } else if (type !== resolution.type) {
         throw new SemError(
           DiagCode.TypeMismatch,
           `dimension '${outputName}' has inconsistent types across fact tables`,
           ref.span
         );
+      } else if (tz !== resolution.tz) {
+        throw new SemError(
+          DiagCode.TypeMismatch,
+          `dimension '${outputName}' is bucketed in ${zoneName(tz)} for one fact table and ${zoneName(resolution.tz)} for another; give both models the same 'timezone'`,
+          ref.span
+        );
       }
       perFact.set(fact.model, resolution.colExpr);
     }
 
-    return { outputName: outputName!, type: type!, grain, perFact };
+    return { outputName: outputName!, type: type!, grain, tz, perFact };
   }
 
   private resolveDim(fact: FactPlan, ref: RefExpr): DimResolution {
@@ -1073,6 +1083,7 @@ export class Analyzer {
         colExpr: this.dimColumn(fact.model, baseDim),
         type: DimType.Time,
         grain: ref.name as TimeGrain,
+        tz: model.timezone,
         outputName: `${head}_${ref.name}`
       };
     }
@@ -1199,6 +1210,10 @@ export class Analyzer {
 
 function refName(ref: RefExpr): string {
   return ref.name;
+}
+
+function zoneName(tz: string | undefined): string {
+  return tz === undefined ? "the database's own calendar" : `'${tz}'`;
 }
 
 function hasAggregate(node: MExpr): boolean {

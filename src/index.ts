@@ -1,6 +1,7 @@
 import { ModelDecl, Program, QueryDecl } from "./ast/nodes.js";
 import { analyze, analyzeFunnel, analyzeRetention, AnalyzeOptions } from "./analyzer/analyzer.js";
 import { Catalog } from "./analyzer/catalog.js";
+import { route } from "./analyzer/routing.js";
 import { FunnelPlan, Plan, RetentionPlan, SqlResult } from "./analyzer/ir.js";
 import { generate, generateFunnel, generateRetention } from "./codegen/codegen.js";
 import { SqlDialect } from "./codegen/dialect.js";
@@ -17,9 +18,11 @@ export * from "./ast/nodes.js";
 export { tokenize, Lexer } from "./lexer/lexer.js";
 export { Parser, parseModels, parseProgram, parseQuery, parseFunnel, parseRetention } from "./parser/parser.js";
 export { Catalog } from "./analyzer/catalog.js";
-export type { DimInfo, MeasureInfo, MetricInfo, JoinInfo, ModelInfo, PolicyInfo } from "./analyzer/catalog.js";
+export type { DimInfo, MaterializationInfo, MeasureInfo, MetricInfo, JoinInfo, ModelInfo, PolicyInfo } from "./analyzer/catalog.js";
 export { Analyzer, analyze, analyzeFunnel, analyzeRetention } from "./analyzer/analyzer.js";
 export type { AnalyzeOptions } from "./analyzer/analyzer.js";
+export { route } from "./analyzer/routing.js";
+export type { RoutedPlan } from "./analyzer/routing.js";
 export * from "./analyzer/ir.js";
 export type { SqlDialect } from "./codegen/dialect.js";
 export { PostgresDialect, postgres } from "./codegen/postgres.js";
@@ -39,15 +42,17 @@ export function buildCatalog(models: ModelDecl[]): Catalog {
 
 export function catalogFromSource(source: string): Catalog {
   const program = parseProgram(source);
-  return Catalog.build(program.models, program.policies);
+  return Catalog.build(program.models, program.policies, program.materializes);
 }
 
 export interface Compiled extends SqlResult {
   readonly plan: Plan | FunnelPlan | RetentionPlan;
+  readonly routedTo?: string;
 }
 
 export interface CompileOptions extends AnalyzeOptions {
   readonly dialect?: SqlDialect;
+  readonly route?: boolean;
 }
 
 export function compile(modelSource: string, querySource: string, options: CompileOptions = {}): Compiled {
@@ -69,9 +74,11 @@ export function compileWithCatalog(
     const plan = analyzeRetention(catalog, parseRetention(querySource));
     return { ...generateRetention(catalog, plan, dialect), plan };
   }
-  const plan = analyze(catalog, parseQuery(querySource), options);
-  const result = generate(catalog, plan, dialect);
-  return { ...result, plan };
+  const query = parseQuery(querySource);
+  const plan = analyze(catalog, query, options);
+  const routed = options.route === false ? undefined : route(catalog, plan, query.span);
+  const chosen = routed?.plan ?? plan;
+  return { ...generate(catalog, chosen, dialect), plan: chosen, routedTo: routed?.materialization };
 }
 
 function leadingKind(source: string): TokKind | undefined {

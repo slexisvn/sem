@@ -12,7 +12,7 @@ export interface ColRef {
 export type ColExpr =
   | { readonly k: "col"; readonly ref: ColRef }
   | { readonly k: "num"; readonly value: number }
-  | { readonly k: "trunc"; readonly grain: TimeGrain; readonly arg: ColExpr }
+  | { readonly k: "trunc"; readonly grain: TimeGrain; readonly arg: ColExpr; readonly tz?: string }
   | { readonly k: "bin"; readonly op: ArithOp; readonly left: ColExpr; readonly right: ColExpr };
 
 export interface ValueRef {
@@ -81,6 +81,7 @@ export interface DimPlan {
   readonly outputName: string;
   readonly type: DimType;
   readonly grain?: TimeGrain;
+  readonly tz?: string;
   readonly perFact: Map<string, ColExpr>;
 }
 
@@ -133,6 +134,7 @@ export interface RetentionPlan {
   readonly entity: ColRef;
   readonly time: ColRef;
   readonly grain: TimeGrain;
+  readonly tz?: string;
   readonly periods: number;
 }
 
@@ -179,6 +181,53 @@ export function modelSet(expr: MExpr, into: Set<string> = new Set()): Set<string
       return into;
     case "num":
       return into;
+  }
+}
+
+export function isValue(node: ColExpr | ValueRef): node is ValueRef {
+  return node.k === "param";
+}
+
+export function signature(node: MExpr): string {
+  switch (node.k) {
+    case "agg":
+      return `${node.func}${node.quantile !== undefined ? ":" + node.quantile : ""}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
+    case "bin":
+      return `(${signature(node.left)}${node.op}${signature(node.right)})`;
+    case "num":
+      return `#${node.value}`;
+  }
+}
+
+export function sigCol(expr: ColExpr): string {
+  switch (expr.k) {
+    case "col":
+      return `${expr.ref.model}.${expr.ref.column}`;
+    case "num":
+      return `#${expr.value}`;
+    case "trunc":
+      return `${expr.grain}${expr.tz !== undefined ? "@" + expr.tz : ""}(${sigCol(expr.arg)})`;
+    case "bin":
+      return `(${sigCol(expr.left)}${expr.op}${sigCol(expr.right)})`;
+  }
+}
+
+export function sigCond(cond: Cond): string {
+  switch (cond.k) {
+    case "cmp":
+      return `${sigCol(cond.left)}${cond.op}${isValue(cond.right) ? "$" + String(cond.right.value) : sigCol(cond.right)}`;
+    case "and":
+      return `and(${sigCond(cond.left)},${sigCond(cond.right)})`;
+    case "or":
+      return `or(${sigCond(cond.left)},${sigCond(cond.right)})`;
+    case "not":
+      return `not(${sigCond(cond.operand)})`;
+    case "in":
+      return `in(${sigCol(cond.left)},${cond.values.map((v) => String(v.value)).join(",")})`;
+    case "between":
+      return `bt(${sigCol(cond.left)},${String(cond.lo.value)},${String(cond.hi.value)})`;
+    case "like":
+      return `like(${sigCol(cond.left)},${String(cond.pattern.value)})`;
   }
 }
 

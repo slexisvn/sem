@@ -1,5 +1,5 @@
 import { TimeGrain } from "../config/constants.js";
-import { BaseDialect, lateralAsOf } from "./dialect.js";
+import { BaseDialect, lateralAsOf, quoteZone } from "./dialect.js";
 
 const MONTHS = (later: string, earlier: string): string =>
   `(EXTRACT(YEAR FROM ${later}) - EXTRACT(YEAR FROM ${earlier})) * 12 + (EXTRACT(MONTH FROM ${later}) - EXTRACT(MONTH FROM ${earlier}))`;
@@ -26,8 +26,8 @@ export class PostgresDialect extends BaseDialect {
     return `$${index1}`;
   }
 
-  public truncTime(grain: TimeGrain, expr: string): string {
-    return `DATE_TRUNC('${grain}', ${expr})`;
+  public truncTime(grain: TimeGrain, expr: string, tz?: string): string {
+    return `DATE_TRUNC('${grain}', ${tz === undefined ? expr : `${expr} AT TIME ZONE ${quoteZone(tz)}`})`;
   }
 
   public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {

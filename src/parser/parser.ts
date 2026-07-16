@@ -283,6 +283,8 @@ export class Parser {
 
     let table: string | undefined;
     let primaryKey: string | undefined;
+    let timezone: string | undefined;
+    let timezoneSpan: Span | undefined;
     const joins: JoinDecl[] = [];
     const dimensions: DimensionDecl[] = [];
     const measures: MeasureDecl[] = [];
@@ -299,6 +301,13 @@ export class Parser {
           this.next();
           primaryKey = this.expect(TokKind.Ident, "a primary key column").text;
           break;
+        case TokKind.Timezone: {
+          this.next();
+          const zone = this.expect(TokKind.String, "a timezone name such as 'Asia/Ho_Chi_Minh'");
+          timezone = zone.value as string;
+          timezoneSpan = zone.span;
+          break;
+        }
         case TokKind.Join:
           joins.push(this.parseJoin());
           break;
@@ -344,6 +353,8 @@ export class Parser {
       nameSpan: nameTok.span,
       table,
       primaryKey,
+      timezone,
+      timezoneSpan,
       joins,
       dimensions,
       measures,

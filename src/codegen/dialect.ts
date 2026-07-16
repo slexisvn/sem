@@ -5,13 +5,17 @@ export interface SqlDialect {
   ident(name: string): string;
   qualifiedName(dotted: string): string;
   paramPlaceholder(index1: number): string;
-  truncTime(grain: TimeGrain, expr: string): string;
+  truncTime(grain: TimeGrain, expr: string, tz?: string): string;
   limit(n: number): string;
   periodSeries?(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string;
   orderedQuantile?(argSql: string, fraction: number): string;
   approxQuantile?(argSql: string, fraction: number): string;
   asOfLateral?(table: string, alias: string, keyPred: string, tsPred: string, order: string): string;
   periodDiff?(grain: TimeGrain, later: string, earlier: string): string;
+}
+
+export function quoteZone(tz: string): string {
+  return `'${tz.replace(/'/g, "''")}'`;
 }
 
 export function lateralAsOf(table: string, alias: string, keyPred: string, tsPred: string, order: string): string {
@@ -26,7 +30,7 @@ export abstract class BaseDialect implements SqlDialect {
 
   protected abstract quote(name: string): string;
   public abstract paramPlaceholder(index1: number): string;
-  public abstract truncTime(grain: TimeGrain, expr: string): string;
+  public abstract truncTime(grain: TimeGrain, expr: string, tz?: string): string;
 
   public ident(name: string): string {
     return SIMPLE_IDENT.test(name) ? name : this.quote(name);

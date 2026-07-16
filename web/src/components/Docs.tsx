@@ -43,10 +43,12 @@ const TOC: Array<{ id: string; label: string }> = [
   { id: "types", label: "Types & additivity" },
   { id: "query", label: "Queries" },
   { id: "transforms", label: "Time transforms" },
+  { id: "timezone", label: "Timezones" },
   { id: "funnel", label: "Funnels" },
   { id: "retention", label: "Retention" },
   { id: "policies", label: "Policies" },
   { id: "materialize", label: "Materialize & assert" },
+  { id: "routing", label: "Pre-aggregate routing" },
   { id: "dialects", label: "Dialects" },
   { id: "reference", label: "Grammar reference" },
 ];
@@ -362,6 +364,55 @@ show revenue.of(region) by region, status           # region subtotal beside eac
           </p>
         </Section>
 
+        <Section id="timezone" title="Timezones">
+          <p>
+            A month is not a fact about an instant — it is a fact about an instant <em>and</em> a
+            calendar. By default sem buckets time on whatever calendar the database uses, which is
+            usually UTC. For a business in Ho Chi Minh City that quietly moves the first seven hours
+            of every month into the previous one.
+          </p>
+          <p>
+            A model may name the zone its calendar should follow. It applies to every time grain on
+            that model — in <code>by</code>, in <code>where</code>, and in <code>retention</code> —
+            so the grouping and the filter can never disagree about where a month starts.
+          </p>
+          <Code>{`model Orders {
+  table public.orders
+  primary_key id
+  timezone 'Asia/Ho_Chi_Minh'
+
+  dimension ordered_at: time
+  measure gross = sum(amount)
+  metric  revenue = gross
+}`}</Code>
+          <Code lang="sql">{`-- show revenue by ordered_at.month
+SELECT DATE_TRUNC('month', orders.ordered_at AT TIME ZONE 'Asia/Ho_Chi_Minh') AS ordered_at_month,
+       SUM(orders.amount) AS revenue
+FROM public.orders AS orders
+GROUP BY DATE_TRUNC('month', orders.ordered_at AT TIME ZONE 'Asia/Ho_Chi_Minh');`}</Code>
+          <p>
+            The time column is assumed to hold an <strong>absolute instant</strong> —{" "}
+            <code>timestamptz</code> on Postgres, <code>TIMESTAMP</code> on BigQuery, and a UTC-stored
+            column on MySQL. Each dialect converts with its own primitive:
+          </p>
+          <table className="docs__table">
+            <thead>
+              <tr><th>Dialect</th><th>How the zone is applied</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Postgres</td><td><code>ts AT TIME ZONE 'zone'</code>, then <code>DATE_TRUNC</code></td></tr>
+              <tr><td>BigQuery</td><td><code>TIMESTAMP_TRUNC(ts, MONTH, 'zone')</code> — its <code>DATE_TRUNC</code> takes no zone</td></tr>
+              <tr><td>MySQL</td><td><code>CONVERT_TZ(ts, 'UTC', 'zone')</code> — needs the tz tables loaded</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Two fact tables answering one query must agree on the zone for a shared time dimension. If
+            they don't, sem refuses the query rather than putting two different calendars in one
+            column. A zone must be a real IANA name; anything else is rejected at build time and never
+            reaches the SQL.
+          </p>
+        </Section>
+
         <Section id="funnel" title="Funnels">
           <p>
             A <code>funnel</code> counts how many entities moved through an ordered sequence of steps.
@@ -421,6 +472,71 @@ assert revenue where ordered_at.month = '2026-01' == 1250000
 assert aov where region = 'VN' between 20 and 60`}</Code>
         </Section>
 
+        <Section id="routing" title="Pre-aggregate routing">
+          <p>
+            A <code>materialize</code> declaration is also a promise about what has been precomputed.
+            The planner will answer a later query from one of them when — and only when — it can
+            recover the same numbers. Nothing else changes: the query you write is the same.
+          </p>
+          <Code>{`materialize daily_orders as
+  show revenue, orders, aov by region, status, ordered_at.day
+
+# reads daily_orders and re-aggregates: SUM(daily_orders.revenue)
+show revenue by region
+
+# reads daily_orders and re-truncates the day column up to a month
+show revenue by ordered_at.month
+
+# reads public.orders — an average of averages is not an average
+show aov by region`}</Code>
+          <p>
+            The gate is <a href="#types">additivity</a>, which sem already knows from the type system.
+            Rolling a measure up from a coarser pre-aggregate re-aggregates it, so it is only sound
+            when the measure is additive at that grain. A <code>sum</code> or <code>count</code> rolls
+            up with <code>SUM</code>; a <code>min</code>/<code>max</code> with <code>MIN</code>/
+            <code>MAX</code>. A ratio like <code>aov</code>, or a semi-additive balance, cannot — so it
+            is refused and the query falls back to the fact table. This is the one thing a semantic
+            layer can do that a hand-written rollup table cannot: the refusal is automatic.
+          </p>
+          <p>
+            Asking at exactly the pre-aggregate's own grain re-aggregates nothing, so any metric is
+            readable there, ratios included.
+          </p>
+          <table className="docs__table">
+            <thead>
+              <tr><th>Query wants</th><th>Pre-aggregate has</th><th>Routed?</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Additive metric, coarser grain</td><td>Finer grain</td><td>✅ re-aggregated</td></tr>
+              <tr><td>Any metric, identical grain</td><td>Identical grain</td><td>✅ read back as-is</td></tr>
+              <tr><td><code>ordered_at.month</code></td><td><code>ordered_at.day</code></td><td>✅ days nest in months</td></tr>
+              <tr><td><code>ordered_at.month</code></td><td><code>ordered_at.week</code></td><td>❌ weeks straddle months</td></tr>
+              <tr><td><code>ordered_at.day</code></td><td><code>ordered_at.month</code></td><td>❌ the days are gone</td></tr>
+              <tr><td>Ratio / non-additive, coarser grain</td><td>Finer grain</td><td>❌ would be an average of averages</td></tr>
+              <tr><td>Semi-additive, coarser grain</td><td>Finer grain</td><td>❌ would sum a balance across time</td></tr>
+              <tr><td>Anything coarser</td><td>A grain built across a fan-out join</td><td>❌ rows are repeated per child</td></tr>
+              <tr><td>All orders</td><td>Only paid orders (a <code>where</code> or <code>policy</code>)</td><td>❌ the rows are not there</td></tr>
+              <tr><td>Paid orders</td><td>Only paid orders</td><td>✅ the filter is already baked in</td></tr>
+            </tbody>
+          </table>
+          <p>
+            A pre-aggregate remembers the filters it was built with — both its own <code>where</code>{" "}
+            and any <code>policy</code> folded into it. A query may use it only if it is asking for at
+            least those same restrictions; whatever it asks for beyond them is applied to the
+            pre-aggregate as a residual filter. So a pre-aggregate over a policy-scoped model serves
+            queries under that policy, and is invisible to queries that opt out of it.
+          </p>
+          <p>
+            When several pre-aggregates could serve a query, the narrowest one wins. The compile
+            result reports which was used, or nothing if the fact table was read directly.
+          </p>
+          <Code lang="javascript">{`const { sql, routedTo } = compile(schemaSource, "show revenue by region");
+// routedTo === "daily_orders"
+
+// opt out and always read the fact tables
+compile(schemaSource, "show revenue by region", { route: false });`}</Code>
+        </Section>
+
         <Section id="dialects" title="Dialects">
           <p>
             codegen targets three SQL dialects: <strong>Postgres</strong> (default),{" "}
@@ -449,6 +565,8 @@ const sql = compile(schemaSource, "show revenue by region", {
               <tr><td>As-of joins</td><td>✅</td><td>❌ no lateral join</td><td>✅ 8.0.14+</td></tr>
               <tr><td>Exact quantiles (<code>median</code>, <code>percentile</code>)</td><td>✅</td><td>❌ estimator only</td><td>❌</td></tr>
               <tr><td>Approximate quantiles (<code>approx_median</code>, <code>approx_percentile</code>)</td><td>✅ answered exactly</td><td>✅</td><td>❌</td></tr>
+              <tr><td>Model <code>timezone</code></td><td>✅ <code>AT TIME ZONE</code></td><td>✅ <code>TIMESTAMP_TRUNC</code></td><td>✅ <code>CONVERT_TZ</code>, needs tz tables</td></tr>
+              <tr><td>Pre-aggregate routing</td><td>✅</td><td>✅</td><td>✅</td></tr>
             </tbody>
           </table>
         </Section>
@@ -459,6 +577,7 @@ const sql = compile(schemaSource, "show revenue by region", {
 model <Name> {
   table <name | schema.name>
   primary_key <column>
+  timezone '<IANA zone>'
   join <Model> on <cond> [asof <fact_ts> <op> <target_ts>] (<cardinality>)
   dimension <name>: <string|number|boolean|time>
   measure <name> [: <unit>] [<additivity>] = <agg>(<column>)

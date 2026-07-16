@@ -40,7 +40,7 @@
       "patterns": [{ "match": "''", "name": "constant.character.escape.sem" }]
     },
     "keywords": {
-      "match": "\\b(model|table|primary_key|join|on|asof|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|funnel|steps|over|retention|periods|and|or|not|in|between|like|true|false)\\b",
+      "match": "\\b(model|table|primary_key|timezone|join|on|asof|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|funnel|steps|over|retention|periods|and|or|not|in|between|like|true|false)\\b",
       "name": "keyword.control.sem"
     },
     "modifiers": {

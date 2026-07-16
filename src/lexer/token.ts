@@ -18,6 +18,7 @@ export enum TokKind {
   Model = "MODEL",
   Table = "TABLE",
   PrimaryKey = "PRIMARY_KEY",
+  Timezone = "TIMEZONE",
   Join = "JOIN",
   On = "ON",
   Asof = "ASOF",
