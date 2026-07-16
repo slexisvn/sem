@@ -3,6 +3,8 @@
 model Subscriptions {
   table billing.subscriptions
   primary_key id
+  timezone 'Europe/Berlin'
+  fiscal_year_starts 4
 
   join Plans on plan_id = Plans.id (many_to_one)
   join Accounts on account_id = Accounts.id (many_to_one)
@@ -52,3 +54,9 @@ assert arpa where region = 'EMEA' between 50 and 5000
 #   show accounts by Accounts.industry                 # distinct accounts per industry
 #   show mrr.share by country                          # each country's share of MRR
 #   show largest_mrr by Plans.name                     # max survives the plan fan-out unchanged
+#
+# The books close in March and the calendar is Berlin's, so months and years are
+# cut on local boundaries and the fiscal grains are available:
+#   show mrr by started_at.fiscal_year                 # FY2025 = Apr 2025 -> Mar 2026
+#   show mrr.cumulative() by started_at.fiscal_quarter # running total across the fiscal year
+#   show mrr by started_at.year                        # still the plain calendar year

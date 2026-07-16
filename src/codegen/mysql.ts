@@ -1,4 +1,4 @@
-import { TimeGrain } from "../config/constants.js";
+import { calendarGrain, CalendarGrain, TimeGrain } from "../config/constants.js";
 import { BaseDialect, lateralAsOf, quoteZone } from "./dialect.js";
 
 const UTC = "'UTC'";
@@ -14,19 +14,27 @@ export class MySqlDialect extends BaseDialect {
     return "?";
   }
 
-  public truncTime(grain: TimeGrain, expr: string, tz?: string): string {
-    const local = tz === undefined ? expr : `CONVERT_TZ(${expr}, ${UTC}, ${quoteZone(tz)})`;
+  protected localize(expr: string, tz: string): string {
+    return `CONVERT_TZ(${expr}, ${UTC}, ${quoteZone(tz)})`;
+  }
+
+  protected shiftMonths(expr: string, months: number): string {
+    const verb = months < 0 ? "DATE_SUB" : "DATE_ADD";
+    return `${verb}(${expr}, INTERVAL ${Math.abs(months)} MONTH)`;
+  }
+
+  protected truncCalendar(grain: CalendarGrain, expr: string): string {
     switch (grain) {
       case TimeGrain.Day:
-        return `DATE(${local})`;
+        return `DATE(${expr})`;
       case TimeGrain.Week:
-        return `STR_TO_DATE(CONCAT(YEARWEEK(${local}, 3), ' Monday'), '%X%V %W')`;
+        return `STR_TO_DATE(CONCAT(YEARWEEK(${expr}, 3), ' Monday'), '%X%V %W')`;
       case TimeGrain.Month:
-        return `DATE_FORMAT(${local}, '%Y-%m-01')`;
+        return `DATE_FORMAT(${expr}, '%Y-%m-01')`;
       case TimeGrain.Quarter:
-        return `STR_TO_DATE(CONCAT(YEAR(${local}), '-', LPAD(((QUARTER(${local}) - 1) * 3 + 1), 2, '0'), '-01'), '%Y-%m-%d')`;
+        return `STR_TO_DATE(CONCAT(YEAR(${expr}), '-', LPAD(((QUARTER(${expr}) - 1) * 3 + 1), 2, '0'), '-01'), '%Y-%m-%d')`;
       case TimeGrain.Year:
-        return `DATE_FORMAT(${local}, '%Y-01-01')`;
+        return `DATE_FORMAT(${expr}, '%Y-01-01')`;
     }
   }
 
@@ -35,7 +43,7 @@ export class MySqlDialect extends BaseDialect {
   }
 
   public periodDiff(grain: TimeGrain, later: string, earlier: string): string {
-    return `TIMESTAMPDIFF(${grain.toUpperCase()}, ${earlier}, ${later})`;
+    return `TIMESTAMPDIFF(${calendarGrain(grain).toUpperCase()}, ${earlier}, ${later})`;
   }
 }
 

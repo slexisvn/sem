@@ -1,11 +1,20 @@
-import { TimeGrain } from "../config/constants.js";
+import {
+  calendarGrain,
+  CalendarGrain,
+  CALENDAR_GRAIN,
+  fiscalOffset,
+  GrainStep,
+  GRAIN_STEP,
+  TimeFrame,
+  TimeGrain
+} from "../config/constants.js";
 
 export interface SqlDialect {
   readonly name: string;
   ident(name: string): string;
   qualifiedName(dotted: string): string;
   paramPlaceholder(index1: number): string;
-  truncTime(grain: TimeGrain, expr: string, tz?: string): string;
+  truncTime(grain: TimeGrain, expr: string, frame?: TimeFrame): string;
   limit(n: number): string;
   periodSeries?(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string;
   orderedQuantile?(argSql: string, fraction: number): string;
@@ -30,7 +39,9 @@ export abstract class BaseDialect implements SqlDialect {
 
   protected abstract quote(name: string): string;
   public abstract paramPlaceholder(index1: number): string;
-  public abstract truncTime(grain: TimeGrain, expr: string, tz?: string): string;
+  protected abstract localize(expr: string, tz: string): string;
+  protected abstract truncCalendar(grain: CalendarGrain, expr: string, frame: TimeFrame | undefined): string;
+  protected abstract shiftMonths(expr: string, months: number, frame: TimeFrame | undefined): string;
 
   public ident(name: string): string {
     return SIMPLE_IDENT.test(name) ? name : this.quote(name);
@@ -45,5 +56,17 @@ export abstract class BaseDialect implements SqlDialect {
 
   public limit(n: number): string {
     return `LIMIT ${n}`;
+  }
+
+  public truncTime(grain: TimeGrain, expr: string, frame?: TimeFrame): string {
+    const local = frame?.tz === undefined ? expr : this.localize(expr, frame.tz);
+    const offset = CALENDAR_GRAIN.has(grain) ? fiscalOffset(frame) : 0;
+    if (offset === 0) return this.truncCalendar(calendarGrain(grain), local, frame);
+    const shifted = this.truncCalendar(calendarGrain(grain), this.shiftMonths(local, -offset, frame), frame);
+    return this.shiftMonths(shifted, offset, frame);
+  }
+
+  protected step(grain: TimeGrain): GrainStep {
+    return GRAIN_STEP.get(grain)!;
   }
 }

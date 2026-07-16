@@ -1,5 +1,5 @@
 import { REAGG_FUNC, ReAgg } from "../config/aggregates.js";
-import { GRAIN_ROLLUP, TimeGrain } from "../config/constants.js";
+import { frameEquals, GRAIN_ROLLUP, TimeFrame, TimeGrain } from "../config/constants.js";
 import { NON_ADDITIVE } from "../config/additivity.js";
 import { Span } from "../lexer/token.js";
 import { analyze } from "./analyzer.js";
@@ -26,7 +26,7 @@ export interface RoutedPlan {
 interface DimSlot {
   readonly column: string;
   readonly grain?: TimeGrain;
-  readonly tz?: string;
+  readonly frame?: TimeFrame;
 }
 
 class Candidate {
@@ -38,7 +38,7 @@ class Candidate {
   constructor(private readonly mv: MaterializationInfo, private readonly source: Plan, private readonly span: Span) {
     for (const dim of source.dims) {
       for (const colExpr of dim.perFact.values()) {
-        this.byBase.set(sigCol(colExpr), { column: dim.outputName, grain: dim.grain, tz: dim.tz });
+        this.byBase.set(sigCol(colExpr), { column: dim.outputName, grain: dim.grain, frame: dim.frame });
       }
     }
     for (const select of source.selects) {
@@ -91,14 +91,14 @@ class Candidate {
     const slots = [...dim.perFact.values()].map((colExpr) => this.byBase.get(sigCol(colExpr)));
     const slot = slots[0];
     if (slot === undefined || slots.some((other) => other?.column !== slot.column)) return undefined;
-    if (!bucketReachable(slot, dim.grain, dim.tz)) return undefined;
+    if (!bucketReachable(slot, dim.grain, dim.frame)) return undefined;
     this.used.add(slot.column);
     if (slot.grain !== dim.grain) this.coarsened = true;
     return {
       outputName: dim.outputName,
       type: dim.type,
       grain: slot.grain === dim.grain ? undefined : dim.grain,
-      tz: slot.grain === undefined ? dim.tz : undefined,
+      frame: carriedFrame(slot, dim.frame),
       perFact: new Map([[this.mv.name, this.column(slot.column)]])
     };
   }
@@ -212,10 +212,10 @@ class Candidate {
       case "trunc": {
         const slot = this.byBase.get(sigCol(expr.arg));
         if (slot === undefined) return undefined;
-        if (!bucketReachable(slot, expr.grain, expr.tz)) return undefined;
+        if (!bucketReachable(slot, expr.grain, expr.frame)) return undefined;
         return slot.grain === expr.grain
           ? this.column(slot.column)
-          : { k: "trunc", grain: expr.grain, arg: this.column(slot.column), tz: slot.grain === undefined ? expr.tz : undefined };
+          : { k: "trunc", grain: expr.grain, arg: this.column(slot.column), frame: carriedFrame(slot, expr.frame) };
       }
       case "bin": {
         const left = this.rewriteColExpr(expr.left);
@@ -256,10 +256,15 @@ function conjuncts(cond: Cond | undefined, into: Cond[] = []): Cond[] {
   return into;
 }
 
-function bucketReachable(slot: DimSlot, grain: TimeGrain | undefined, tz: string | undefined): boolean {
+function carriedFrame(slot: DimSlot, frame: TimeFrame | undefined): TimeFrame | undefined {
+  if (slot.grain === undefined) return frame;
+  return frame?.fiscalStart === undefined ? undefined : { fiscalStart: frame.fiscalStart };
+}
+
+function bucketReachable(slot: DimSlot, grain: TimeGrain | undefined, frame: TimeFrame | undefined): boolean {
   if (grain === undefined) return slot.grain === undefined;
   if (slot.grain === undefined) return true;
-  return slot.tz === tz && GRAIN_ROLLUP.get(slot.grain)!.has(grain);
+  return frameEquals(slot.frame, frame) && GRAIN_ROLLUP.get(slot.grain)!.has(grain);
 }
 
 function rollupReduce(expr: MExpr, span: Span): ReAgg | undefined {

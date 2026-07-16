@@ -1,4 +1,4 @@
-import { AggFunc, ArithOp, CmpOp, DimType, TimeGrain, TransformKind } from "../config/constants.js";
+import { AggFunc, ArithOp, CmpOp, DimType, fiscalOffset, TimeFrame, TimeGrain, TransformKind } from "../config/constants.js";
 import { ReAgg } from "../config/aggregates.js";
 import { Additivity } from "../config/additivity.js";
 import { Unit } from "../config/units.js";
@@ -12,7 +12,7 @@ export interface ColRef {
 export type ColExpr =
   | { readonly k: "col"; readonly ref: ColRef }
   | { readonly k: "num"; readonly value: number }
-  | { readonly k: "trunc"; readonly grain: TimeGrain; readonly arg: ColExpr; readonly tz?: string }
+  | { readonly k: "trunc"; readonly grain: TimeGrain; readonly arg: ColExpr; readonly frame?: TimeFrame }
   | { readonly k: "bin"; readonly op: ArithOp; readonly left: ColExpr; readonly right: ColExpr };
 
 export interface ValueRef {
@@ -81,7 +81,7 @@ export interface DimPlan {
   readonly outputName: string;
   readonly type: DimType;
   readonly grain?: TimeGrain;
-  readonly tz?: string;
+  readonly frame?: TimeFrame;
   readonly perFact: Map<string, ColExpr>;
 }
 
@@ -134,7 +134,7 @@ export interface RetentionPlan {
   readonly entity: ColRef;
   readonly time: ColRef;
   readonly grain: TimeGrain;
-  readonly tz?: string;
+  readonly frame?: TimeFrame;
   readonly periods: number;
 }
 
@@ -199,6 +199,10 @@ export function signature(node: MExpr): string {
   }
 }
 
+export function sigFrame(frame: TimeFrame | undefined): string {
+  return `@${frame?.tz ?? ""}+${fiscalOffset(frame)}`;
+}
+
 export function sigCol(expr: ColExpr): string {
   switch (expr.k) {
     case "col":
@@ -206,7 +210,7 @@ export function sigCol(expr: ColExpr): string {
     case "num":
       return `#${expr.value}`;
     case "trunc":
-      return `${expr.grain}${expr.tz !== undefined ? "@" + expr.tz : ""}(${sigCol(expr.arg)})`;
+      return `${expr.grain}${sigFrame(expr.frame)}(${sigCol(expr.arg)})`;
     case "bin":
       return `(${sigCol(expr.left)}${expr.op}${sigCol(expr.right)})`;
   }

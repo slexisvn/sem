@@ -170,6 +170,8 @@ export interface ModelDecl {
   readonly primaryKey: string;
   readonly timezone?: string;
   readonly timezoneSpan?: Span;
+  readonly fiscalStart?: number;
+  readonly fiscalStartSpan?: Span;
   readonly joins: JoinDecl[];
   readonly dimensions: DimensionDecl[];
   readonly measures: MeasureDecl[];

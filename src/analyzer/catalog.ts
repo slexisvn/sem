@@ -14,7 +14,18 @@ import {
   SegmentDecl
 } from "../ast/nodes.js";
 import { Unit } from "../config/units.js";
-import { ASOF_ORDER, Cardinality, CARDINALITIES, CmpOp, DIM_TYPES, DimType, FANOUT_CARDINALITIES } from "../config/constants.js";
+import {
+  ASOF_ORDER,
+  Cardinality,
+  CARDINALITIES,
+  CmpOp,
+  DIM_TYPES,
+  DimType,
+  FANOUT_CARDINALITIES,
+  FISCAL_START_MAX,
+  FISCAL_START_MIN,
+  TimeFrame
+} from "../config/constants.js";
 import { AsOfClause } from "../ast/nodes.js";
 import { closestName, DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
@@ -66,7 +77,7 @@ export interface ModelInfo {
   readonly name: string;
   readonly table: string;
   readonly primaryKey: string;
-  readonly timezone?: string;
+  readonly frame?: TimeFrame;
   readonly dims: Map<string, DimInfo>;
   readonly measures: Map<string, MeasureInfo>;
   readonly metrics: Map<string, MetricInfo>;
@@ -184,7 +195,7 @@ export class Catalog {
       name: decl.name,
       table: decl.table,
       primaryKey: decl.primaryKey,
-      timezone: this.checkTimezone(decl),
+      frame: this.buildFrame(decl),
       dims,
       measures,
       metrics,
@@ -192,6 +203,11 @@ export class Catalog {
       joins: [],
       span: decl.span
     });
+  }
+
+  private buildFrame(decl: ModelDecl): TimeFrame | undefined {
+    if (decl.timezone === undefined && decl.fiscalStart === undefined) return undefined;
+    return { tz: this.checkTimezone(decl), fiscalStart: this.checkFiscalStart(decl) };
   }
 
   private checkTimezone(decl: ModelDecl): string | undefined {
@@ -204,6 +220,19 @@ export class Catalog {
       );
     }
     return decl.timezone;
+  }
+
+  private checkFiscalStart(decl: ModelDecl): number | undefined {
+    const month = decl.fiscalStart;
+    if (month === undefined) return undefined;
+    if (!Number.isInteger(month) || month < FISCAL_START_MIN || month > FISCAL_START_MAX) {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `'fiscal_year_starts' takes the month the fiscal year opens, from ${FISCAL_START_MIN} to ${FISCAL_START_MAX}; got ${month}`,
+        decl.fiscalStartSpan
+      );
+    }
+    return month;
   }
 
   private addSegment(

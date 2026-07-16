@@ -4,7 +4,7 @@ import { snippetCompletion } from "@codemirror/autocomplete";
 import { tags } from "@lezer/highlight";
 
 const keywordRE =
-  /^(?:model|table|primary_key|timezone|join|on|asof|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|funnel|steps|over|retention|periods|and|or|not|in|between|like|true|false)\b/;
+  /^(?:model|table|primary_key|timezone|fiscal_year_starts|join|on|asof|dimension|measure|metric|segment|show|by|where|having|order|asc|desc|top|assert|policy|restrict|materialize|as|funnel|steps|over|retention|periods|and|or|not|in|between|like|true|false)\b/;
 const modifierRE = /^(?:distinct|semi_additive|non_additive|last|first)\b/;
 const typeRE = /^(?:string|number|boolean|time)\b/;
 const aggregateRE = /^(?:sum|count|avg|min|max|median|percentile|approx_median|approx_percentile)\b(?=\s*\()/;
@@ -109,6 +109,7 @@ const keywordCompletions = [
   "table",
   "primary_key",
   "timezone",
+  "fiscal_year_starts",
   "join",
   "on",
   "asof",

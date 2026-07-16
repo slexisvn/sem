@@ -285,6 +285,8 @@ export class Parser {
     let primaryKey: string | undefined;
     let timezone: string | undefined;
     let timezoneSpan: Span | undefined;
+    let fiscalStart: number | undefined;
+    let fiscalStartSpan: Span | undefined;
     const joins: JoinDecl[] = [];
     const dimensions: DimensionDecl[] = [];
     const measures: MeasureDecl[] = [];
@@ -306,6 +308,13 @@ export class Parser {
           const zone = this.expect(TokKind.String, "a timezone name such as 'Asia/Ho_Chi_Minh'");
           timezone = zone.value as string;
           timezoneSpan = zone.span;
+          break;
+        }
+        case TokKind.FiscalYearStarts: {
+          this.next();
+          const month = this.expect(TokKind.Number, "the month the fiscal year opens, from 1 to 12");
+          fiscalStart = month.value as number;
+          fiscalStartSpan = month.span;
           break;
         }
         case TokKind.Join:
@@ -355,6 +364,8 @@ export class Parser {
       primaryKey,
       timezone,
       timezoneSpan,
+      fiscalStart,
+      fiscalStartSpan,
       joins,
       dimensions,
       measures,

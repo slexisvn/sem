@@ -135,7 +135,7 @@ export class Generator {
     if (this.dialect.periodDiff === undefined) {
       throw new SemError(DiagCode.Unsupported, `dialect '${this.dialect.name}' does not support retention`);
     }
-    const period = this.dialect.truncTime(plan.grain, this.renderColRef(plan.time), plan.tz);
+    const period = this.dialect.truncTime(plan.grain, this.renderColRef(plan.time), plan.frame);
     const events = [
       `SELECT ${this.renderColRef(plan.entity)} AS ${RETENTION_ENTITY}, ${period} AS ${RETENTION_PERIOD}`,
       `FROM ${this.tableRef(plan.model)}`
@@ -539,7 +539,7 @@ export class Generator {
 
   private renderDim(dim: DimPlan, model: string, params: ParamBag): string {
     const base = this.renderColExpr(dim.perFact.get(model)!, params);
-    return dim.grain !== undefined ? this.dialect.truncTime(dim.grain, base, dim.tz) : base;
+    return dim.grain !== undefined ? this.dialect.truncTime(dim.grain, base, dim.frame) : base;
   }
 
   private renderMExpr(node: MExpr, params: ParamBag): string {
@@ -619,7 +619,7 @@ export class Generator {
       case "num":
         return String(expr.value);
       case "trunc":
-        return this.dialect.truncTime(expr.grain, this.renderColExpr(expr.arg, params), expr.tz);
+        return this.dialect.truncTime(expr.grain, this.renderColExpr(expr.arg, params), expr.frame);
       case "bin":
         return this.renderArith(expr.op, this.renderColExpr(expr.left, params), this.renderColExpr(expr.right, params));
     }

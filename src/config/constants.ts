@@ -17,7 +17,36 @@ export enum TimeGrain {
   Week = "week",
   Month = "month",
   Quarter = "quarter",
-  Year = "year"
+  Year = "year",
+  FiscalQuarter = "fiscal_quarter",
+  FiscalYear = "fiscal_year"
+}
+
+export type CalendarGrain = Exclude<TimeGrain, TimeGrain.FiscalQuarter | TimeGrain.FiscalYear>;
+
+export const CALENDAR_GRAIN: ReadonlyMap<TimeGrain, CalendarGrain> = new Map([
+  [TimeGrain.FiscalQuarter, TimeGrain.Quarter],
+  [TimeGrain.FiscalYear, TimeGrain.Year]
+]);
+
+export function calendarGrain(grain: TimeGrain): CalendarGrain {
+  return CALENDAR_GRAIN.get(grain) ?? (grain as CalendarGrain);
+}
+
+export const FISCAL_START_MIN = 1;
+export const FISCAL_START_MAX = 12;
+
+export interface TimeFrame {
+  readonly tz?: string;
+  readonly fiscalStart?: number;
+}
+
+export function fiscalOffset(frame: TimeFrame | undefined): number {
+  return (frame?.fiscalStart ?? FISCAL_START_MIN) - FISCAL_START_MIN;
+}
+
+export function frameEquals(a: TimeFrame | undefined, b: TimeFrame | undefined): boolean {
+  return a?.tz === b?.tz && fiscalOffset(a) === fiscalOffset(b);
 }
 
 export enum Cardinality {
@@ -90,15 +119,33 @@ export const GRAIN_DAYS: ReadonlyMap<TimeGrain, number> = new Map([
   [TimeGrain.Week, 7],
   [TimeGrain.Month, 30],
   [TimeGrain.Quarter, 90],
-  [TimeGrain.Year, 365]
+  [TimeGrain.Year, 365],
+  [TimeGrain.FiscalQuarter, 90],
+  [TimeGrain.FiscalYear, 365]
 ]);
 
 export const GRAIN_ROLLUP: ReadonlyMap<TimeGrain, ReadonlySet<TimeGrain>> = new Map([
-  [TimeGrain.Day, new Set([TimeGrain.Day, TimeGrain.Week, TimeGrain.Month, TimeGrain.Quarter, TimeGrain.Year])],
+  [
+    TimeGrain.Day,
+    new Set([
+      TimeGrain.Day,
+      TimeGrain.Week,
+      TimeGrain.Month,
+      TimeGrain.Quarter,
+      TimeGrain.Year,
+      TimeGrain.FiscalQuarter,
+      TimeGrain.FiscalYear
+    ])
+  ],
   [TimeGrain.Week, new Set([TimeGrain.Week])],
-  [TimeGrain.Month, new Set([TimeGrain.Month, TimeGrain.Quarter, TimeGrain.Year])],
+  [
+    TimeGrain.Month,
+    new Set([TimeGrain.Month, TimeGrain.Quarter, TimeGrain.Year, TimeGrain.FiscalQuarter, TimeGrain.FiscalYear])
+  ],
   [TimeGrain.Quarter, new Set([TimeGrain.Quarter, TimeGrain.Year])],
-  [TimeGrain.Year, new Set([TimeGrain.Year])]
+  [TimeGrain.Year, new Set([TimeGrain.Year])],
+  [TimeGrain.FiscalQuarter, new Set([TimeGrain.FiscalQuarter, TimeGrain.FiscalYear])],
+  [TimeGrain.FiscalYear, new Set([TimeGrain.FiscalYear])]
 ]);
 
 export const GRAIN_PERIODS_PER_YEAR: ReadonlyMap<TimeGrain, number> = new Map([
@@ -106,7 +153,24 @@ export const GRAIN_PERIODS_PER_YEAR: ReadonlyMap<TimeGrain, number> = new Map([
   [TimeGrain.Week, 52],
   [TimeGrain.Month, 12],
   [TimeGrain.Quarter, 4],
-  [TimeGrain.Year, 1]
+  [TimeGrain.Year, 1],
+  [TimeGrain.FiscalQuarter, 4],
+  [TimeGrain.FiscalYear, 1]
+]);
+
+export interface GrainStep {
+  readonly count: number;
+  readonly unit: string;
+}
+
+export const GRAIN_STEP: ReadonlyMap<TimeGrain, GrainStep> = new Map([
+  [TimeGrain.Day, { count: 1, unit: "day" }],
+  [TimeGrain.Week, { count: 1, unit: "week" }],
+  [TimeGrain.Month, { count: 1, unit: "month" }],
+  [TimeGrain.Quarter, { count: 3, unit: "month" }],
+  [TimeGrain.Year, { count: 1, unit: "year" }],
+  [TimeGrain.FiscalQuarter, { count: 3, unit: "month" }],
+  [TimeGrain.FiscalYear, { count: 1, unit: "year" }]
 ]);
 
 export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
@@ -114,6 +178,7 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["table", TokKind.Table],
   ["primary_key", TokKind.PrimaryKey],
   ["timezone", TokKind.Timezone],
+  ["fiscal_year_starts", TokKind.FiscalYearStarts],
   ["join", TokKind.Join],
   ["on", TokKind.On],
   ["asof", TokKind.Asof],

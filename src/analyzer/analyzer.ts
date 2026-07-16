@@ -24,10 +24,15 @@ import {
   DimType,
   DURATION_UNIT_DAYS,
   FANOUT_CARDINALITIES,
+  FISCAL_START_MIN,
+  fiscalOffset,
+  frameEquals,
   GRAIN_DAYS,
   GRAIN_PERIODS_PER_YEAR,
+  GRAIN_ROLLUP,
   PERIOD_TO_DATE_GRAIN,
   TIME_GRAINS,
+  TimeFrame,
   TimeGrain,
   TransformKind,
   TRANSFORM_NAMES
@@ -117,7 +122,7 @@ interface DimResolution {
   readonly colExpr: ColExpr;
   readonly type: DimType;
   readonly grain?: TimeGrain;
-  readonly tz?: string;
+  readonly frame?: TimeFrame;
   readonly outputName: string;
 }
 
@@ -243,7 +248,7 @@ export class Analyzer {
       entity: this.funnelColumn(decl.model, decl.entity, "entity key"),
       time: time.column,
       grain: time.grain,
-      tz: this.catalog.models.get(decl.model)!.timezone,
+      frame: this.catalog.models.get(decl.model)!.frame,
       periods: decl.periods
     };
   }
@@ -375,10 +380,11 @@ export class Analyzer {
   ): TransformIR {
     const periodGrain = PERIOD_TO_DATE_GRAIN.get(kind)!;
     const grainDim = this.timeGrainDim(dims, call);
-    if (GRAIN_DAYS.get(grainDim.grain!)! >= GRAIN_DAYS.get(periodGrain)!) {
+    const grain = grainDim.grain!;
+    if (grain === periodGrain || !GRAIN_ROLLUP.get(grain)!.has(periodGrain)) {
       throw new SemError(
         DiagCode.TypeMismatch,
-        `transform '.${call.name}' needs a time grain finer than '${periodGrain}' in 'by'; got '${grainDim.grain}'`,
+        `transform '.${call.name}' needs a time grain finer than '${periodGrain}' in 'by' that nests inside it; '${grain}' does not`,
         call.span
       );
     }
@@ -809,7 +815,7 @@ export class Analyzer {
       const resolution = this.resolveDim(fact, ref);
       const colExpr =
         resolution.grain !== undefined
-          ? ({ k: "trunc", grain: resolution.grain, arg: resolution.colExpr, tz: resolution.tz } as ColExpr)
+          ? ({ k: "trunc", grain: resolution.grain, arg: resolution.colExpr, frame: resolution.frame } as ColExpr)
           : resolution.colExpr;
       return { colExpr, type: resolution.type };
     };
@@ -978,7 +984,7 @@ export class Analyzer {
     let outputName: string | undefined;
     let type: DimType | undefined;
     let grain: TimeGrain | undefined;
-    let tz: string | undefined;
+    let frame: TimeFrame | undefined;
 
     for (const fact of facts) {
       const resolution = this.resolveDim(fact, ref);
@@ -986,24 +992,24 @@ export class Analyzer {
         outputName = resolution.outputName;
         type = resolution.type;
         grain = resolution.grain;
-        tz = resolution.tz;
+        frame = resolution.frame;
       } else if (type !== resolution.type) {
         throw new SemError(
           DiagCode.TypeMismatch,
           `dimension '${outputName}' has inconsistent types across fact tables`,
           ref.span
         );
-      } else if (tz !== resolution.tz) {
+      } else if (!frameEquals(frame, resolution.frame)) {
         throw new SemError(
           DiagCode.TypeMismatch,
-          `dimension '${outputName}' is bucketed in ${zoneName(tz)} for one fact table and ${zoneName(resolution.tz)} for another; give both models the same 'timezone'`,
+          `dimension '${outputName}' is bucketed on ${calendarName(frame)} for one fact table and ${calendarName(resolution.frame)} for another; give both models the same 'timezone' and 'fiscal_year_starts'`,
           ref.span
         );
       }
       perFact.set(fact.model, resolution.colExpr);
     }
 
-    return { outputName: outputName!, type: type!, grain, tz, perFact };
+    return { outputName: outputName!, type: type!, grain, frame, perFact };
   }
 
   private resolveDim(fact: FactPlan, ref: RefExpr): DimResolution {
@@ -1083,7 +1089,7 @@ export class Analyzer {
         colExpr: this.dimColumn(fact.model, baseDim),
         type: DimType.Time,
         grain: ref.name as TimeGrain,
-        tz: model.timezone,
+        frame: model.frame,
         outputName: `${head}_${ref.name}`
       };
     }
@@ -1212,8 +1218,11 @@ function refName(ref: RefExpr): string {
   return ref.name;
 }
 
-function zoneName(tz: string | undefined): string {
-  return tz === undefined ? "the database's own calendar" : `'${tz}'`;
+function calendarName(frame: TimeFrame | undefined): string {
+  const parts: string[] = [frame?.tz === undefined ? "the database's own timezone" : `'${frame.tz}'`];
+  const offset = fiscalOffset(frame);
+  if (offset > 0) parts.push(`a fiscal year starting in month ${offset + FISCAL_START_MIN}`);
+  return parts.join(" with ");
 }
 
 function hasAggregate(node: MExpr): boolean {

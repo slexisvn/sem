@@ -44,6 +44,7 @@ const TOC: Array<{ id: string; label: string }> = [
   { id: "query", label: "Queries" },
   { id: "transforms", label: "Time transforms" },
   { id: "timezone", label: "Timezones" },
+  { id: "fiscal", label: "Fiscal calendars" },
   { id: "funnel", label: "Funnels" },
   { id: "retention", label: "Retention" },
   { id: "policies", label: "Policies" },
@@ -413,6 +414,55 @@ GROUP BY DATE_TRUNC('month', orders.ordered_at AT TIME ZONE 'Asia/Ho_Chi_Minh');
           </p>
         </Section>
 
+        <Section id="fiscal" title="Fiscal calendars">
+          <p>
+            Plenty of companies do not close their year in December. Name the month yours opens and
+            two more grains appear on the model's time dimensions:{" "}
+            <code>.fiscal_quarter</code> and <code>.fiscal_year</code>.
+          </p>
+          <Code>{`model Orders {
+  table public.orders
+  primary_key id
+  fiscal_year_starts 4        # the year opens in April
+
+  dimension ordered_at: time
+  measure gross = sum(amount)
+  metric  revenue = gross
+}
+
+# show revenue by ordered_at.fiscal_year
+# show revenue.cumulative() by ordered_at.fiscal_quarter`}</Code>
+          <p>
+            A fiscal period is labelled by the date it starts, like every other grain — so a February
+            2026 order under an April year lands in the bucket <code>2025-04-01</code>. The calendar
+            grains are left exactly where they were: <code>.year</code> is still the calendar year, and
+            a fiscal year opening in January shifts nothing at all.
+          </p>
+          <table className="docs__table">
+            <thead>
+              <tr><th>Grain</th><th>Bucket for an order on 2026-02-15, year opening in April</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>ordered_at.year</code></td><td><code>2026-01-01</code> — the calendar year</td></tr>
+              <tr><td><code>ordered_at.fiscal_year</code></td><td><code>2025-04-01</code> — FY2025, which runs Apr 2025 → Mar 2026</td></tr>
+              <tr><td><code>ordered_at.quarter</code></td><td><code>2026-01-01</code> — calendar Q1</td></tr>
+              <tr><td><code>ordered_at.fiscal_quarter</code></td><td><code>2026-01-01</code> — FY2025 Q4</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Fiscal and calendar periods do not always nest inside one another, and sem will not pretend
+            they do. A fiscal quarter under an April year can straddle a calendar year, so{" "}
+            <code>revenue.ytd()</code> over <code>.fiscal_quarter</code> is refused rather than
+            answered with a number that is quietly wrong. The same rule catches an old sharp edge:{" "}
+            <code>revenue.mtd()</code> over <code>.week</code> is refused too, because a week can
+            straddle two months.
+          </p>
+          <p>
+            Timezones and fiscal years compose — the instant is made local first, then the fiscal year
+            is cut on that local calendar.
+          </p>
+        </Section>
+
         <Section id="funnel" title="Funnels">
           <p>
             A <code>funnel</code> counts how many entities moved through an ordered sequence of steps.
@@ -565,7 +615,8 @@ const sql = compile(schemaSource, "show revenue by region", {
               <tr><td>As-of joins</td><td>✅</td><td>❌ no lateral join</td><td>✅ 8.0.14+</td></tr>
               <tr><td>Exact quantiles (<code>median</code>, <code>percentile</code>)</td><td>✅</td><td>❌ estimator only</td><td>❌</td></tr>
               <tr><td>Approximate quantiles (<code>approx_median</code>, <code>approx_percentile</code>)</td><td>✅ answered exactly</td><td>✅</td><td>❌</td></tr>
-              <tr><td>Model <code>timezone</code></td><td>✅ <code>AT TIME ZONE</code></td><td>✅ <code>TIMESTAMP_TRUNC</code></td><td>✅ <code>CONVERT_TZ</code>, needs tz tables</td></tr>
+              <tr><td>Model <code>timezone</code></td><td>✅ <code>AT TIME ZONE</code></td><td>✅ <code>DATETIME(ts, zone)</code></td><td>✅ <code>CONVERT_TZ</code>, needs tz tables</td></tr>
+              <tr><td>Fiscal grains (<code>fiscal_year_starts</code>)</td><td>✅</td><td>✅</td><td>✅</td></tr>
               <tr><td>Pre-aggregate routing</td><td>✅</td><td>✅</td><td>✅</td></tr>
             </tbody>
           </table>
@@ -578,6 +629,7 @@ model <Name> {
   table <name | schema.name>
   primary_key <column>
   timezone '<IANA zone>'
+  fiscal_year_starts <1-12>
   join <Model> on <cond> [asof <fact_ts> <op> <target_ts>] (<cardinality>)
   dimension <name>: <string|number|boolean|time>
   measure <name> [: <unit>] [<additivity>] = <agg>(<column>)
@@ -610,6 +662,7 @@ retention <Model> by <entity> over <time>.<grain> periods <n>
 # additivity    non_additive | semi_additive(last|first by <dim>)
 # cardinalities many_to_one one_to_many one_to_one many_to_many
 # grains        day week month quarter year
+#               fiscal_quarter fiscal_year  (need fiscal_year_starts on the model)
 # transforms    mom yoy rolling(Nd) cumulative mtd qtd ytd share of(dims)
 # operators     = != < <= > >=  and or not  in between like
 # comments      lines starting with #`}</Code>

@@ -1,4 +1,4 @@
-import { TimeGrain } from "../config/constants.js";
+import { calendarGrain, CalendarGrain, TimeGrain } from "../config/constants.js";
 import { BaseDialect, lateralAsOf, quoteZone } from "./dialect.js";
 
 const MONTHS = (later: string, earlier: string): string =>
@@ -26,12 +26,23 @@ export class PostgresDialect extends BaseDialect {
     return `$${index1}`;
   }
 
-  public truncTime(grain: TimeGrain, expr: string, tz?: string): string {
-    return `DATE_TRUNC('${grain}', ${tz === undefined ? expr : `${expr} AT TIME ZONE ${quoteZone(tz)}`})`;
+  protected localize(expr: string, tz: string): string {
+    return `(${expr} AT TIME ZONE ${quoteZone(tz)})`;
+  }
+
+  protected truncCalendar(grain: CalendarGrain, expr: string): string {
+    return `DATE_TRUNC('${grain}', ${expr})`;
+  }
+
+  protected shiftMonths(expr: string, months: number): string {
+    const op = months < 0 ? "-" : "+";
+    return `(${expr} ${op} INTERVAL '${Math.abs(months)} months')`;
   }
 
   public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {
-    return `generate_series(${startExpr}, ${endExpr}, INTERVAL '1 ${grain}') AS ${this.ident(columnAlias)}`;
+    const { count, unit } = this.step(grain);
+    const interval = `${count} ${unit}${count > 1 ? "s" : ""}`;
+    return `generate_series(${startExpr}, ${endExpr}, INTERVAL '${interval}') AS ${this.ident(columnAlias)}`;
   }
 
   public orderedQuantile(argSql: string, fraction: number): string {
@@ -43,7 +54,7 @@ export class PostgresDialect extends BaseDialect {
   }
 
   public periodDiff(grain: TimeGrain, later: string, earlier: string): string {
-    return PERIOD_DIFF.get(grain)!(later, earlier);
+    return PERIOD_DIFF.get(calendarGrain(grain))!(later, earlier);
   }
 }
 

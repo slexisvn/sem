@@ -19,6 +19,7 @@ export enum TokKind {
   Table = "TABLE",
   PrimaryKey = "PRIMARY_KEY",
   Timezone = "TIMEZONE",
+  FiscalYearStarts = "FISCAL_YEAR_STARTS",
   Join = "JOIN",
   On = "ON",
   Asof = "ASOF",
