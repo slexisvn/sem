@@ -51,7 +51,7 @@ const TOC: Array<{ id: string; label: string }> = [
   { id: "retention", label: "Retention" },
   { id: "policies", label: "Policies" },
   { id: "materialize", label: "Materialize & assert" },
-  { id: "routing", label: "Pre-aggregate routing" },
+  { id: "routing", label: "Rollups & routing" },
   { id: "dialects", label: "Dialects" },
   { id: "reference", label: "Grammar reference" },
 ];
@@ -192,10 +192,12 @@ dimension ordered_at: time`}</Code>
         <Section id="measures" title="Measures">
           <p>
             A <code>measure</code> is a raw aggregate over one model. It is the building block metrics
-            are made of. Supported aggregate functions: <code>sum</code>, <code>count</code>,{" "}
-            <code>avg</code>, <code>min</code>, <code>max</code>, <code>median</code>,{" "}
-            <code>percentile(col, p)</code>, their <code>approx_</code> variants, plus{" "}
-            <code>count(distinct …)</code>.
+            are made of. The aggregate functions are <code>sum</code>, <code>count</code>,{" "}
+            <code>avg</code>, <code>min</code>, <code>max</code>, <code>median</code> and{" "}
+            <code>percentile(col, p)</code>, plus <code>count(distinct …)</code>. Only the two
+            quantiles have an <code>approx_</code> variant — <code>approx_median</code> and{" "}
+            <code>approx_percentile</code> — because they are the only ones an engine might not be
+            able to answer exactly.
           </p>
           <Code>{`measure gross       = sum(amount)
 measure order_count = count(id)
@@ -322,7 +324,11 @@ show total_balance by region`}</Code>
         </Section>
 
         <Section id="query" title="Queries">
-          <p>A query is one statement. Only <code>show</code> and <code>by</code> are required.</p>
+          <p>
+            A query is one statement. Only <code>show</code> and what it selects are required —
+            everything after it is optional, <code>by</code> included. A query with no{" "}
+            <code>by</code> collapses the whole table to a single row.
+          </p>
           <Code>{`show <metrics> [by <dimensions>]
                  [where <filter>]
                  [having <filter>]
@@ -357,7 +363,8 @@ show revenue.rolling(90d) by ordered_at.day         # 90-day rolling window
 show events.cumulative by occurred_at.day           # running total
 show revenue.mtd by ordered_at.day                  # month-to-date running total
 show revenue.ytd by ordered_at.month                # year-to-date running total
-show revenue.share by region                        # each group's share of total
+show revenue.share by region                        # each region's share of total
+show revenue.share(region) by region, status        # each status's share of its region
 show revenue.of(region) by region, status           # region subtotal beside each status`}</Code>
           <table className="docs__table">
             <thead>
@@ -369,7 +376,7 @@ show revenue.of(region) by region, status           # region subtotal beside eac
               <tr><td><code>.rolling(Nd)</code></td><td>Rolling window over a duration (<code>d w m q y</code>).</td></tr>
               <tr><td><code>.cumulative</code></td><td>Running total from the start of the series.</td></tr>
               <tr><td><code>.mtd / .qtd / .ytd</code></td><td>Running total that resets each month / quarter / year. Needs a finer grain in <code>by</code>.</td></tr>
-              <tr><td><code>.share</code></td><td>The group's fraction of the overall total.</td></tr>
+              <tr><td><code>.share(dims)</code></td><td>The group's fraction of a subtotal — of its <code>dims</code> partition, or of the overall total when written bare as <code>.share</code>.</td></tr>
               <tr><td><code>.of(dims)</code></td><td>The base re-aggregated to a coarser grain (a subtotal), shown as its own column beside the detail; <code>.of()</code> is the grand total.</td></tr>
             </tbody>
           </table>
@@ -495,7 +502,7 @@ GROUP BY DATE_TRUNC('month', orders.ordered_at AT TIME ZONE 'Asia/Ho_Chi_Minh');
             </thead>
             <tbody>
               <tr><td>Postgres</td><td><code>ts AT TIME ZONE 'zone'</code>, then <code>DATE_TRUNC</code></td></tr>
-              <tr><td>BigQuery</td><td><code>TIMESTAMP_TRUNC(ts, MONTH, 'zone')</code> — its <code>DATE_TRUNC</code> takes no zone</td></tr>
+              <tr><td>BigQuery</td><td><code>DATETIME(ts, 'zone')</code>, then <code>DATETIME_TRUNC</code></td></tr>
               <tr><td>MySQL</td><td><code>CONVERT_TZ(ts, 'UTC', 'zone')</code> — needs the tz tables loaded</td></tr>
             </tbody>
           </table>
@@ -616,7 +623,7 @@ assert revenue where ordered_at.month = '2026-01' == 1250000
 assert aov where region = 'VN' between 20 and 60`}</Code>
         </Section>
 
-        <Section id="routing" title="Pre-aggregate routing">
+        <Section id="routing" title="Rollups & routing">
           <p>
             Swap <code>materialize</code> for <code>rollup</code> and the view stops being only a
             thing you build: the planner may now answer a query from it when — and only when — it can
@@ -781,7 +788,8 @@ retention <Model> by <entity> over <time>.<grain> periods <n>
 # cardinalities many_to_one one_to_many one_to_one many_to_many
 # grains        day week month quarter year
 #               fiscal_quarter fiscal_year  (need fiscal_year_starts on the model)
-# transforms    mom yoy rolling(Nd) cumulative mtd qtd ytd share of(dims)
+# transforms    mom yoy rolling(Nd) cumulative mtd qtd ytd share(dims) of(dims)
+#               share/of take dimension or hierarchy names; bare = the grand total
 # operators     = != < <= > >=  and or not  in between like
 # comments      lines starting with #`}</Code>
         </Section>
