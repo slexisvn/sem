@@ -131,7 +131,7 @@ model AdSpend {
 
 describe("pre-aggregates remember which calendar they were bucketed on", () => {
   const MV = `${LOCAL}
-materialize daily as show revenue by region, ordered_at.day
+rollup daily as show revenue by region, ordered_at.day
 `;
 
   test("rolling a local day column up to a month does not shift it a second time", () => {

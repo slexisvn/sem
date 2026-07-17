@@ -9,6 +9,12 @@ import {
   TimeGrain
 } from "../config/constants.js";
 
+export interface PeriodSeries {
+  readonly from: string;
+  readonly ctes?: readonly string[];
+  readonly recursive?: boolean;
+}
+
 export interface SqlDialect {
   readonly name: string;
   ident(name: string): string;
@@ -16,7 +22,7 @@ export interface SqlDialect {
   paramPlaceholder(index1: number): string;
   truncTime(grain: TimeGrain, expr: string, frame?: TimeFrame): string;
   limit(n: number): string;
-  periodSeries?(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string;
+  periodSeries?(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): PeriodSeries;
   orderedQuantile?(argSql: string, fraction: number): string;
   approxQuantile?(argSql: string, fraction: number): string;
   asOfLateral?(table: string, alias: string, keyPred: string, tsPred: string, order: string): string;

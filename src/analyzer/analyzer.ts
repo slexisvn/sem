@@ -13,6 +13,8 @@ import {
   NodeKind,
   QueryDecl,
   RefExpr,
+  SelectExpr,
+  SelectItem,
   TransformCall
 } from "../ast/nodes.js";
 import {
@@ -40,10 +42,10 @@ import {
 import { aggAllowsDistinct, aggReAgg, aggTakesParameter, ReAgg } from "../config/aggregates.js";
 import { Additivity, fromReAgg, NON_ADDITIVE, windowReduce } from "../config/additivity.js";
 import { Unit } from "../config/units.js";
-import { typeOf } from "./metric-type.js";
+import { typeOf, typeOfOut } from "./metric-type.js";
 import { closestName, DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
-import { Catalog, DimInfo, JoinInfo, MeasureInfo, ModelInfo } from "./catalog.js";
+import { Catalog, DimInfo, HierarchyInfo, JoinInfo, MeasureInfo, ModelInfo } from "./catalog.js";
 import {
   ColExpr,
   ColRef,
@@ -58,6 +60,7 @@ import {
   MetricCond,
   MExpr,
   modelSet,
+  OutExpr,
   Plan,
   SelectMetric,
   TransformIR,
@@ -66,13 +69,31 @@ import {
 
 export interface AnalyzeOptions {
   readonly policies?: readonly string[];
+  readonly strict?: boolean;
 }
+
+type WorkingOut =
+  | { readonly k: "term"; readonly baseName: string; readonly expr: MExpr; readonly raw?: TransformCall }
+  | { readonly k: "bin"; readonly op: ArithOp; readonly left: WorkingOut; readonly right: WorkingOut }
+  | { readonly k: "num"; readonly value: number };
 
 interface WorkingSelect {
   readonly name: string;
-  readonly baseName: string;
-  readonly expr: MExpr;
-  readonly raw?: TransformCall;
+  readonly out: WorkingOut;
+}
+
+function workingTerms(out: WorkingOut, into: Extract<WorkingOut, { k: "term" }>[] = []): Extract<WorkingOut, { k: "term" }>[] {
+  switch (out.k) {
+    case "term":
+      into.push(out);
+      return into;
+    case "bin":
+      workingTerms(out.left, into);
+      workingTerms(out.right, into);
+      return into;
+    case "num":
+      return into;
+  }
 }
 
 const INVERSE_CARDINALITY: ReadonlyMap<Cardinality, Cardinality> = new Map([
@@ -135,6 +156,7 @@ export class Analyzer {
   private readonly catalog: Catalog;
   private readonly cache = new Map<string, MExpr>();
   private readonly adjacency: Map<string, JoinInfo[]>;
+  private strict = false;
 
   constructor(catalog: Catalog) {
     this.catalog = catalog;
@@ -142,19 +164,22 @@ export class Analyzer {
   }
 
   public analyze(query: QueryDecl, options: AnalyzeOptions = {}): Plan {
-    const working = query.metrics.map((item) => this.resolveSelect(item));
-    const facts = this.contributingFacts(working, query.span);
+    this.strict = options.strict === true;
+    const working = query.metrics.map((item) => this.resolveSelectItem(item));
+    const terms = working.flatMap((w) => workingTerms(w.out));
+    const facts = this.contributingFacts(terms, query.span);
     const strategy = facts.length === 1 ? "single" : "multi";
-    const windowed = working.some((s) => s.raw !== undefined);
+    const windowed = terms.some((t) => t.raw !== undefined);
 
     const dims = query.dimensions.map((ref) => this.resolveDimension(facts, ref));
-    const selects = working.map((w) => this.finishSelect(w, dims, strategy));
+    const selects = working.map((w) => this.finishSelect(w, dims));
+    for (const select of selects) typeOfOut(select.out, query.span);
     const fannedOut = facts.some((fact) => fact.fannedOut === true);
 
-    if (selects.some((s) => hasSemiAdditive(s.expr)) && (strategy !== "single" || windowed || fannedOut)) {
+    if (terms.some((t) => hasSemiAdditive(t.expr)) && fannedOut) {
       throw new SemError(
         DiagCode.Unsupported,
-        "semi-additive measures are only supported in single-fact, non-windowed queries without a fan-out dimension",
+        "a semi-additive measure picks one row per period, but a fan-out dimension repeats that row per child, so the pick cannot be counted once",
         query.span
       );
     }
@@ -165,10 +190,17 @@ export class Analyzer {
 
     let having: MetricCond | undefined;
     if (query.having !== undefined) {
-      if (strategy === "multi" || windowed || fannedOut) {
+      if (windowed) {
         throw new SemError(
           DiagCode.Unsupported,
-          "'having' is only supported for a single-fact, non-windowed query without a fan-out dimension",
+          "'having' filters groups before any window is computed, so it cannot be combined with a transform in the same query",
+          query.span
+        );
+      }
+      if (strategy === "multi") {
+        throw new SemError(
+          DiagCode.Unsupported,
+          "'having' filters the groups of one fact table as they are formed, but this query spans several",
           query.span
         );
       }
@@ -323,28 +355,55 @@ export class Analyzer {
     return expanded;
   }
 
-  private resolveSelect(item: MetricSelect): WorkingSelect {
-    const expr = this.expandQueryRef(item.base);
-    return { name: this.selectName(item), baseName: item.base.name, expr, raw: item.transform };
+  private resolveSelectItem(item: SelectItem): WorkingSelect {
+    return { name: this.itemName(item), out: this.resolveSelectExpr(item.expr) };
+  }
+
+  private resolveSelectExpr(expr: SelectExpr): WorkingOut {
+    switch (expr.kind) {
+      case NodeKind.MetricSelect:
+        return { k: "term", baseName: expr.base.name, expr: this.expandQueryRef(expr.base), raw: expr.transform };
+      case NodeKind.SelectNumber:
+        return { k: "num", value: expr.value };
+      case NodeKind.SelectBinary:
+        return {
+          k: "bin",
+          op: ARITH_OPS.get(expr.op)!,
+          left: this.resolveSelectExpr(expr.left),
+          right: this.resolveSelectExpr(expr.right)
+        };
+    }
+  }
+
+  private itemName(item: SelectItem): string {
+    if (item.alias !== undefined) return item.alias;
+    if (item.expr.kind === NodeKind.MetricSelect) return this.selectName(item.expr);
+    throw new SemError(
+      DiagCode.InvalidDefinition,
+      "an inline expression has no name of its own; give it one with 'as', e.g. 'show revenue / revenue.of(region) as share_of_region'",
+      item.span
+    );
   }
 
   private selectName(item: MetricSelect): string {
     return item.transform === undefined ? item.base.name : `${item.base.name}_${item.transform.name}`;
   }
 
-  private finishSelect(w: WorkingSelect, dims: DimPlan[], strategy: string): SelectMetric {
-    if (w.raw === undefined) {
-      return { name: w.name, baseName: w.baseName, expr: w.expr };
+  private finishSelect(w: WorkingSelect, dims: DimPlan[]): SelectMetric {
+    return { name: w.name, out: this.finishOut(w.out, dims) };
+  }
+
+  private finishOut(out: WorkingOut, dims: DimPlan[]): OutExpr {
+    switch (out.k) {
+      case "num":
+        return { k: "num", value: out.value };
+      case "bin":
+        return { k: "bin", op: out.op, left: this.finishOut(out.left, dims), right: this.finishOut(out.right, dims) };
+      case "term":
+        return out.raw === undefined
+          ? { k: "term", baseName: out.baseName, expr: out.expr }
+          : { k: "term", baseName: out.baseName, expr: out.expr, transform: this.buildTransform(out.raw, dims, out.expr) };
     }
-    if (strategy !== "single") {
-      throw new SemError(
-        DiagCode.Unsupported,
-        "metric transforms are only supported for single-fact queries in phase 2",
-        w.raw.span
-      );
-    }
-    const transform = this.buildTransform(w.raw, dims, w.expr);
-    return { name: w.name, baseName: w.baseName, expr: w.expr, transform };
   }
 
   private buildTransform(call: TransformCall, dims: DimPlan[], base: MExpr): TransformIR {
@@ -465,17 +524,50 @@ export class Analyzer {
       }
       const name = arg.ref.name;
       const dim = dims.find((d) => d.outputName === name);
-      if (dim === undefined) {
+      if (dim !== undefined) {
+        partition.push(dim.outputName);
+        continue;
+      }
+      const hierarchy = this.locateHierarchy(name, arg.span);
+      if (hierarchy === undefined) {
         throw new SemError(
           DiagCode.UnknownDimension,
           `${call.name}(${name}) partitions by '${name}', which is not one of the 'by' dimensions`,
           arg.span,
-          closestName(name, dims.map((d) => d.outputName))
+          closestName(name, [...dims.map((d) => d.outputName), ...this.catalog.hierarchyIndex.keys()])
         );
       }
-      partition.push(dim.outputName);
+      partition.push(...this.parentLevel(hierarchy, call, dims, arg.span));
     }
     return partition;
+  }
+
+  private locateHierarchy(name: string, span: Span): HierarchyInfo | undefined {
+    const models = this.catalog.hierarchyIndex.get(name);
+    if (models === undefined) return undefined;
+    if (models.length > 1) {
+      throw new SemError(
+        DiagCode.AmbiguousReference,
+        `hierarchy '${name}' is defined in models ${models.join(", ")}`,
+        span
+      );
+    }
+    return this.catalog.models.get(models[0]!)!.hierarchies.get(name)!;
+  }
+
+  private parentLevel(hierarchy: HierarchyInfo, call: TransformCall, dims: DimPlan[], span: Span): string[] {
+    const grouped = new Set(dims.map((dim) => dim.outputName));
+    const present = hierarchy.levels.filter((level) => grouped.has(level));
+    if (present.length === 0) {
+      throw new SemError(
+        DiagCode.UnknownDimension,
+        `${call.name}(${hierarchy.name}) subtotals at the level above, but none of '${hierarchy.name}' (${hierarchy.levels.join(" > ")}) is in 'by'`,
+        span
+      );
+    }
+    const finest = hierarchy.levels.lastIndexOf(present[present.length - 1]!);
+    const parent = hierarchy.levels.slice(0, finest).filter((level) => grouped.has(level)).pop();
+    return parent === undefined ? [] : [parent];
   }
 
   private contributingFacts(selects: readonly { readonly expr: MExpr }[], span: Span): FactPlan[] {
@@ -505,10 +597,19 @@ export class Analyzer {
     if (this.catalog.hasModel(ref.object.name)) {
       return this.expandRef(ref.object.name, ref.name, ref.span, new Set());
     }
+    if (this.catalog.metricIndex.has(ref.object.name) || this.catalog.measureIndex.has(ref.object.name)) {
+      throw new SemError(
+        DiagCode.Unsupported,
+        `unknown transform '.${ref.name}' on metric '${ref.object.name}'`,
+        ref.nameSpan,
+        closestName(ref.name, TRANSFORM_NAMES)
+      );
+    }
     throw new SemError(
-      DiagCode.Unsupported,
-      `metric transforms such as '.${ref.name}' are a phase 2 feature`,
-      ref.span
+      DiagCode.UnknownModel,
+      `unknown model '${ref.object.name}'`,
+      ref.object.span,
+      closestName(ref.object.name, new Set(this.catalog.models.keys()))
     );
   }
 
@@ -572,6 +673,13 @@ export class Analyzer {
     const key = `${located.model}:${located.name}`;
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
+    if (this.strict && located.kind === "measure" && located.unit === undefined) {
+      throw new SemError(
+        DiagCode.MissingUnit,
+        `strict mode: measure '${located.name}' has no unit, so nothing stops it being added to a different quantity; annotate it, e.g. 'measure ${located.name} : count = ...'`,
+        located.span
+      );
+    }
     if (visiting.has(key)) {
       throw new SemError(DiagCode.CyclicMetric, `${located.kind} '${located.name}' is defined in terms of itself`, span);
     }

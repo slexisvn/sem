@@ -33,7 +33,7 @@ model Users {
   dimension plan: string
 }
 
-materialize daily_signups as
+rollup daily_signups as
   show signups by occurred_at.day
 
 materialize weekly_events as

@@ -1,6 +1,7 @@
 import { REAGG_FUNC, ReAgg } from "../config/aggregates.js";
 import { frameEquals, GRAIN_ROLLUP, TimeFrame, TimeGrain } from "../config/constants.js";
 import { NON_ADDITIVE } from "../config/additivity.js";
+import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
 import { analyze } from "./analyzer.js";
 import { Catalog, MaterializationInfo } from "./catalog.js";
@@ -11,6 +12,7 @@ import {
   DimPlan,
   MetricCond,
   MExpr,
+  OutExpr,
   Plan,
   SelectMetric,
   sigCol,
@@ -42,13 +44,13 @@ class Candidate {
       }
     }
     for (const select of source.selects) {
-      if (select.transform === undefined) this.byMetric.set(signature(select.expr), select.name);
+      if (select.out.k === "term" && select.out.transform === undefined) {
+        this.byMetric.set(signature(select.out.expr), select.name);
+      }
     }
   }
 
   public route(query: Plan): RoutedPlan | undefined {
-    if (!isPlainAggregate(this.source)) return undefined;
-
     const dims: DimPlan[] = [];
     for (const dim of query.dims) {
       const rewritten = this.rewriteDim(dim);
@@ -64,9 +66,9 @@ class Candidate {
 
     const selects: SelectMetric[] = [];
     for (const select of query.selects) {
-      const expr = this.rewriteMExpr(select.expr, rollup);
-      if (expr === undefined) return undefined;
-      selects.push({ name: select.name, baseName: select.baseName, expr, transform: select.transform });
+      const out = this.rewriteOut(select.out, rollup);
+      if (out === undefined) return undefined;
+      selects.push({ name: select.name, out });
     }
 
     const having = query.having === undefined ? undefined : this.rewriteMetricCond(query.having, rollup);
@@ -150,6 +152,22 @@ class Candidate {
       case "between": {
         const left = this.rewriteMExpr(cond.left, rollup);
         return left === undefined ? undefined : { k: "between", left, lo: cond.lo, hi: cond.hi };
+      }
+    }
+  }
+
+  private rewriteOut(out: OutExpr, rollup: boolean): OutExpr | undefined {
+    switch (out.k) {
+      case "num":
+        return out;
+      case "term": {
+        const expr = this.rewriteMExpr(out.expr, rollup);
+        return expr === undefined ? undefined : { k: "term", baseName: out.baseName, expr, transform: out.transform };
+      }
+      case "bin": {
+        const left = this.rewriteOut(out.left, rollup);
+        const right = this.rewriteOut(out.right, rollup);
+        return left === undefined || right === undefined ? undefined : { k: "bin", op: out.op, left, right };
       }
     }
   }
@@ -241,8 +259,34 @@ class Candidate {
   }
 }
 
-function isPlainAggregate(plan: Plan): boolean {
-  return !plan.windowed && plan.having === undefined && plan.limit === undefined;
+interface RollupBlocker {
+  readonly test: (plan: Plan) => boolean;
+  readonly why: string;
+}
+
+const ROLLUP_BLOCKERS: readonly RollupBlocker[] = [
+  {
+    test: (plan) => plan.windowed,
+    why: "a transform compares rows against each other, and a comparison cannot be aggregated back up"
+  },
+  {
+    test: (plan) => plan.having !== undefined,
+    why: "'having' has already dropped the groups that failed it, and a coarser query cannot bring them back"
+  },
+  {
+    test: (plan) => plan.limit !== undefined,
+    why: "'top' has already dropped every group but a few, and a coarser query cannot bring them back"
+  }
+];
+
+function checkRollup(mv: MaterializationInfo, plan: Plan): void {
+  const blocker = ROLLUP_BLOCKERS.find((candidate) => candidate.test(plan));
+  if (blocker === undefined) return;
+  throw new SemError(
+    DiagCode.InvalidDefinition,
+    `rollup '${mv.name}' answers queries by aggregating its own rows again, but ${blocker.why}; declare it with 'materialize' if you only want the table built`,
+    mv.span
+  );
 }
 
 function conjuncts(cond: Cond | undefined, into: Cond[] = []): Cond[] {
@@ -279,17 +323,25 @@ function sourcePlans(catalog: Catalog): Map<string, Plan> {
   const cached = PLAN_CACHE.get(catalog);
   if (cached !== undefined) return cached;
   const plans = new Map<string, Plan>();
-  for (const mv of catalog.materializations.values()) plans.set(mv.name, analyze(catalog, mv.query));
+  for (const mv of catalog.rollups.values()) {
+    const plan = analyze(catalog, mv.query);
+    checkRollup(mv, plan);
+    plans.set(mv.name, plan);
+  }
   PLAN_CACHE.set(catalog, plans);
   return plans;
 }
 
+export function checkRollups(catalog: Catalog): void {
+  sourcePlans(catalog);
+}
+
 export function route(catalog: Catalog, query: Plan, span: Span): RoutedPlan | undefined {
-  if (catalog.materializations.size === 0) return undefined;
+  if (catalog.rollups.size === 0) return undefined;
   const plans = sourcePlans(catalog);
   let best: RoutedPlan | undefined;
   let bestWidth = Number.POSITIVE_INFINITY;
-  for (const mv of catalog.materializations.values()) {
+  for (const mv of catalog.rollups.values()) {
     const source = plans.get(mv.name)!;
     const routed = new Candidate(mv, source, span).route(query);
     if (routed !== undefined && source.dims.length < bestWidth) {

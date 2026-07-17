@@ -115,6 +115,44 @@ describe("unit type system", () => {
   });
 });
 
+describe("strict mode closes the gradual-typing escape hatch", () => {
+  const strict = (query: string) => compile(UNITS, query, { strict: true });
+
+  test("an annotated measure is unaffected", () => {
+    expect(() => strict("show revenue by region")).not.toThrow();
+  });
+
+  test("an unannotated measure is refused instead of unifying with anything", () => {
+    expect(codeOf(() => strict("show with_fee by region"))).toBe(DiagCode.MissingUnit);
+  });
+
+  test("the refusal names the measure and points at its declaration", () => {
+    try {
+      strict("show with_fee by region");
+      throw new Error("expected a missing unit");
+    } catch (error) {
+      expect((error as SemError).message).toContain("'untyped'");
+      expect((error as SemError).message).toContain("measure untyped : count");
+    }
+  });
+
+  test("a measure reached through a metric is checked just the same", () => {
+    expect(codeOf(() => strict("show with_fee by region"))).toBe(DiagCode.MissingUnit);
+  });
+
+  test("strict does not turn a sound mixed-unit ratio into an error", () => {
+    expect(() => strict("show aov by region")).not.toThrow();
+  });
+
+  test("strict still reports a genuine mismatch as a mismatch", () => {
+    expect(codeOf(() => strict("show mismatched by region"))).toBe(DiagCode.UnitMismatch);
+  });
+
+  test("the same model compiles without strict, so the mode is opt-in", () => {
+    expect(() => sql(UNITS, "show with_fee by region")).not.toThrow();
+  });
+});
+
 describe("unit algebra derives and cancels dimensions", () => {
   test("dividing a unit by itself cancels to dimensionless", () => {
     expect(unitsIn(() => sql(ALGEBRA, "show bad_ratio by region"))).toEqual(["dimensionless", "money"]);
@@ -191,6 +229,17 @@ model M {
 });
 
 describe("semi-additive code generation", () => {
+  test("having on a balance compares the picked row, not a sum of every row", () => {
+    const out = sql(SEMI, "show total_balance by region having total_balance > 100");
+    expect(out).toContain("HAVING SUM(CASE WHEN accounts.__o0 = accounts.__w0 THEN accounts.__v0 END) > $1");
+    expect(out).not.toContain("HAVING SUM(accounts.amount)");
+  });
+
+  test("a balance can be filtered by having even when it is not selected", () => {
+    const out = sql(SEMI, "show inflow by region having total_balance > 100");
+    expect(out).toContain("HAVING SUM(CASE WHEN accounts.__o0 = accounts.__w0 THEN accounts.__v0 END) > $1");
+  });
+
   test("last-value reduces over a windowed max then sums across other dims", () => {
     const out = sql(SEMI, "show total_balance by region");
     expect(out).toContain("MAX(accounts.snapshot_at) OVER (PARTITION BY accounts.region)");
@@ -310,7 +359,19 @@ describe("semi-additive guards never emit a silently wrong reduction", () => {
     expect(codeOf(() => sql(SEMI, "show total_balance by Entries.kind"))).toBe(DiagCode.Unsupported);
   });
 
-  test("mixing with a windowed transform is rejected", () => {
-    expect(codeOf(() => sql(SEMI, "show total_balance, inflow.rolling(7d) by snapshot_at.day"))).toBe(DiagCode.Unsupported);
+  test("a balance may sit beside a windowed sibling, because neither is summed across time", () => {
+    const out = sql(SEMI, "show total_balance, inflow.rolling(7d) by snapshot_at.day");
+    expect(out).toContain("SUM(dense.inflow) OVER (ORDER BY snapshot_at_day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS inflow_rolling");
+    expect(out).toContain("dense.total_balance AS total_balance");
+  });
+
+  test("a balance and a plain sum over the same column stay separate grid columns", () => {
+    const out = sql(SEMI, "show total_balance, inflow.rolling(7d) by snapshot_at.day");
+    expect(out).toContain("SUM(CASE WHEN accounts.__o0 = accounts.__w0 THEN accounts.__v0 END) AS total_balance");
+    expect(out).toContain("AS inflow");
+  });
+
+  test("a balance still cannot be accumulated across time", () => {
+    expect(codeOf(() => sql(SEMI, "show total_balance.cumulative by snapshot_at.day"))).toBe(DiagCode.NonAdditive);
   });
 });

@@ -30,7 +30,7 @@ model Accounts {
   dimension country: string
 }
 
-materialize balance_by_region as
+rollup balance_by_region as
   show total_balance by region
 
 assert net_movement where snapshot_at.month = '2026-01' between -100000 and 100000

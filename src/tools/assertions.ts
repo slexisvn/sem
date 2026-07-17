@@ -16,7 +16,7 @@ export interface CompiledAssert {
 export function compileAssert(catalog: Catalog, decl: AssertDecl, dialect: SqlDialect = postgres): CompiledAssert {
   const query: QueryDecl = {
     kind: NodeKind.Query,
-    metrics: [decl.metric],
+    metrics: [{ kind: NodeKind.SelectItem, expr: decl.metric, span: decl.metric.span }],
     dimensions: [],
     where: decl.where,
     span: decl.span

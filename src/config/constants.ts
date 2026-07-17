@@ -100,6 +100,20 @@ export const TRANSFORM_NAMES: ReadonlySet<string> = new Set<string>(Object.value
 
 export const SERIESLESS_TRANSFORMS: ReadonlySet<TransformKind> = new Set([TransformKind.Share, TransformKind.Of]);
 
+export type TransformResult = "ratio" | "base";
+
+export const TRANSFORM_RESULT: ReadonlyMap<TransformKind, TransformResult> = new Map([
+  [TransformKind.Mom, "ratio"],
+  [TransformKind.Yoy, "ratio"],
+  [TransformKind.Share, "ratio"],
+  [TransformKind.Rolling, "base"],
+  [TransformKind.Cumulative, "base"],
+  [TransformKind.Mtd, "base"],
+  [TransformKind.Qtd, "base"],
+  [TransformKind.Ytd, "base"],
+  [TransformKind.Of, "base"]
+]);
+
 export const PERIOD_TO_DATE_GRAIN: ReadonlyMap<TransformKind, TimeGrain> = new Map([
   [TransformKind.Mtd, TimeGrain.Month],
   [TransformKind.Qtd, TimeGrain.Quarter],
@@ -186,6 +200,7 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["measure", TokKind.Measure],
   ["metric", TokKind.Metric],
   ["segment", TokKind.Segment],
+  ["hierarchy", TokKind.Hierarchy],
   ["show", TokKind.Show],
   ["by", TokKind.By],
   ["where", TokKind.Where],
@@ -198,6 +213,7 @@ export const KEYWORDS: ReadonlyMap<string, TokKind> = new Map([
   ["policy", TokKind.Policy],
   ["restrict", TokKind.Restrict],
   ["materialize", TokKind.Materialize],
+  ["rollup", TokKind.Rollup],
   ["as", TokKind.As],
   ["funnel", TokKind.Funnel],
   ["steps", TokKind.Steps],
@@ -252,6 +268,7 @@ export const RETENTION_COHORT_COL = "cohort";
 export const RETENTION_PERIOD_PREFIX = "period_";
 export const GRID_CTE = "grid";
 export const SPINE_CTE = "spine";
+export const SPINE_SEQ_CTE = "spine_seq";
 export const DENSE_CTE = "dense";
 export const SPINE_PERIOD_COL = "period";
 

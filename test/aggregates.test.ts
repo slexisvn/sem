@@ -119,7 +119,10 @@ describe("fan-out aggregation deduplicates fact rows by primary key", () => {
     expect(sql).toContain("(SUM(orders.__v0) / NULLIF(COUNT(orders.__v1), 0)) AS aov");
   });
 
-  test("having is refused together with a fan-out dimension", () => {
-    expect(failCode("show revenue by Items.sku having revenue > 10")).toBe(DiagCode.Unsupported);
+  test("having filters on the deduplicated total, not on the repeated rows", () => {
+    const { sql, params } = run("show revenue by Items.sku having revenue > 10");
+    expect(sql).toContain("SELECT DISTINCT orders.id AS __pk");
+    expect(sql).toContain("HAVING SUM(orders.__v0) > $2");
+    expect(params).toEqual(["paid", 10]);
   });
 });

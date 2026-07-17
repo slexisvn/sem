@@ -1,5 +1,6 @@
 import {
   AggOverride,
+  HierarchyDecl,
   DimensionDecl,
   Expr,
   JoinDecl,
@@ -73,6 +74,13 @@ export interface SegmentInfo {
   readonly span: Span;
 }
 
+export interface HierarchyInfo {
+  readonly name: string;
+  readonly model: string;
+  readonly levels: readonly string[];
+  readonly span: Span;
+}
+
 export interface ModelInfo {
   readonly name: string;
   readonly table: string;
@@ -82,6 +90,7 @@ export interface ModelInfo {
   readonly measures: Map<string, MeasureInfo>;
   readonly metrics: Map<string, MetricInfo>;
   readonly segments: Map<string, SegmentInfo>;
+  readonly hierarchies: Map<string, HierarchyInfo>;
   readonly joins: JoinInfo[];
   readonly span: Span;
 }
@@ -115,8 +124,10 @@ export class Catalog {
   public readonly models = new Map<string, ModelInfo>();
   public readonly metricIndex = new Map<string, string[]>();
   public readonly measureIndex = new Map<string, string[]>();
+  public readonly hierarchyIndex = new Map<string, string[]>();
   public readonly policies = new Map<string, PolicyInfo[]>();
   public readonly materializations = new Map<string, MaterializationInfo>();
+  public readonly rollups = new Map<string, MaterializationInfo>();
 
   public static build(
     decls: ModelDecl[],
@@ -143,7 +154,9 @@ export class Catalog {
     if (this.models.has(decl.name) || this.materializations.has(decl.name)) {
       throw new SemError(DiagCode.DuplicateName, `name '${decl.name}' is defined more than once`, decl.nameSpan);
     }
-    this.materializations.set(decl.name, { name: decl.name, table: decl.name, query: decl.query, span: decl.span });
+    const info: MaterializationInfo = { name: decl.name, table: decl.name, query: decl.query, span: decl.span };
+    this.materializations.set(decl.name, info);
+    if (decl.serves) this.rollups.set(decl.name, info);
   }
 
   public policiesFor(model: string): PolicyInfo[] {
@@ -191,6 +204,9 @@ export class Catalog {
     const segments = new Map<string, SegmentInfo>();
     for (const segment of decl.segments) this.addSegment(decl, segment, dims, measures, metrics, segments);
 
+    const hierarchies = new Map<string, HierarchyInfo>();
+    for (const hierarchy of decl.hierarchies) this.addHierarchy(decl, hierarchy, dims, hierarchies);
+
     this.models.set(decl.name, {
       name: decl.name,
       table: decl.table,
@@ -200,9 +216,58 @@ export class Catalog {
       measures,
       metrics,
       segments,
+      hierarchies,
       joins: [],
       span: decl.span
     });
+  }
+
+  private addHierarchy(
+    decl: ModelDecl,
+    hierarchy: HierarchyDecl,
+    dims: Map<string, DimInfo>,
+    hierarchies: Map<string, HierarchyInfo>
+  ): void {
+    if (hierarchies.has(hierarchy.name)) {
+      throw new SemError(DiagCode.DuplicateName, `duplicate hierarchy '${hierarchy.name}' in model '${decl.name}'`, hierarchy.nameSpan);
+    }
+    if (hierarchy.levels.length < 2) {
+      throw new SemError(
+        DiagCode.InvalidDefinition,
+        `hierarchy '${hierarchy.name}' needs at least two levels, coarsest first, e.g. 'hierarchy geo = country > region'`,
+        hierarchy.span
+      );
+    }
+    const seen = new Set<string>();
+    for (const level of hierarchy.levels) {
+      const dim = dims.get(level.name);
+      if (dim === undefined) {
+        throw new SemError(
+          DiagCode.UnknownDimension,
+          `hierarchy '${hierarchy.name}' names '${level.name}', which is not a dimension of model '${decl.name}'`,
+          level.span,
+          closestName(level.name, dims.keys())
+        );
+      }
+      if (dim.type === DimType.Time) {
+        throw new SemError(
+          DiagCode.InvalidDefinition,
+          `hierarchy '${hierarchy.name}' names the time dimension '${level.name}'; time already nests through its grains, so it needs no hierarchy`,
+          level.span
+        );
+      }
+      if (seen.has(level.name)) {
+        throw new SemError(DiagCode.DuplicateName, `hierarchy '${hierarchy.name}' repeats level '${level.name}'`, level.span);
+      }
+      seen.add(level.name);
+    }
+    hierarchies.set(hierarchy.name, {
+      name: hierarchy.name,
+      model: decl.name,
+      levels: hierarchy.levels.map((level) => level.name),
+      span: hierarchy.nameSpan
+    });
+    index(this.hierarchyIndex, hierarchy.name, decl.name);
   }
 
   private buildFrame(decl: ModelDecl): TimeFrame | undefined {

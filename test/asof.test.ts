@@ -84,7 +84,15 @@ describe("asof join works on every dialect with lateral joins", () => {
     expect(sql).toContain("ORDER BY rates.as_of DESC LIMIT 1) AS rates ON TRUE");
   });
 
-  test("bigquery has no lateral join, so it reports the query as unsupported rather than guessing", () => {
-    expect(codeOf(() => compile(LATEST, "show revenue by Rates.tier", { dialect: bigquery }))).toBe(DiagCode.Unsupported);
+  test("bigquery has no lateral join, so the same pick is expressed as a correlated array subquery", () => {
+    const { sql } = compile(LATEST, "show revenue by Rates.tier", { dialect: bigquery });
+    expect(sql).toContain("LEFT JOIN UNNEST(ARRAY(SELECT AS STRUCT rates.* FROM public.fx_rates AS rates");
+    expect(sql).toContain("ORDER BY rates.as_of DESC LIMIT 1)) AS rates");
+    expect(sql).not.toContain("LATERAL");
+  });
+
+  test("bigquery keeps the left row when no quote precedes it, as a left join must", () => {
+    const { sql } = compile(LATEST, "show revenue by Rates.tier", { dialect: bigquery });
+    expect(sql).toContain("LEFT JOIN UNNEST(");
   });
 });

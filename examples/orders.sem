@@ -6,9 +6,13 @@ model Orders {
   join Customers on customer_id = Customers.id (many_to_one)
   join Items on id = Items.order_id (one_to_many)
 
+  dimension country: string
   dimension region: string
+  dimension city: string
   dimension status: string
   dimension ordered_at: time
+
+  hierarchy geo = country > region > city
 
   measure gross       = sum(amount)
   measure order_count = count(id)
@@ -50,7 +54,7 @@ policy analyst_vn on Orders restrict region = 'VN'
 materialize monthly_revenue as
   show revenue, revenue.mom, revenue.rolling(90d) by ordered_at.month
 
-materialize daily_orders as
+rollup daily_orders as
   show revenue, net_revenue, orders, aov, largest by region, status, ordered_at.day
 
 assert revenue where ordered_at.month = '2026-01' == 1250000
@@ -62,10 +66,20 @@ assert aov where region = 'VN' between 20 and 60
 #   show revenue by Items.sku                          # fan-out: dedup on order id before summing
 #   show revenue.share by region                       # each region's share of total
 #   show revenue, revenue.of(region) by region, status # region subtotal beside each status
+#   show revenue / revenue.of(region) as share_of_region by region, status
+#   show (revenue - revenue.of()) / revenue.of() as vs_total by region
+#
+# The geo hierarchy makes one query work at any drill depth: .of(geo) always
+# subtotals at the level above whichever level you grouped by.
+#   show revenue / revenue.of(geo) as share_of_parent by country, region, city
+#   show revenue / revenue.of(geo) as share_of_parent by country, region
+#   show revenue / revenue.of(geo) as share_of_parent by country
 #   show revenue.yoy by ordered_at.month, region       # per-region year-over-year on a dense date spine
 #
-# These are answered from the daily_orders pre-aggregate instead of public.orders
-# (it bakes in the analyst_vn policy, so it serves queries running under it):
+# daily_orders is declared with 'rollup', so it answers these instead of
+# public.orders (it bakes in the analyst_vn policy, so it serves queries running
+# under it). monthly_revenue is a plain 'materialize': it gets built, but a
+# transform's result cannot be aggregated back up, so it never serves anything.
 #   show revenue by region                             # SUM over the daily rows
 #   show revenue by ordered_at.month                   # days re-truncated up to months
 #   show largest by region                             # MAX of daily maxes is the max

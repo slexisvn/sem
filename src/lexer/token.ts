@@ -27,6 +27,7 @@ export enum TokKind {
   Measure = "MEASURE",
   Metric = "METRIC",
   Segment = "SEGMENT",
+  Hierarchy = "HIERARCHY",
 
   Show = "SHOW",
   By = "BY",
@@ -41,6 +42,7 @@ export enum TokKind {
   Policy = "POLICY",
   Restrict = "RESTRICT",
   Materialize = "MATERIALIZE",
+  Rollup = "ROLLUP",
   As = "AS",
   Funnel = "FUNNEL",
   Steps = "STEPS",

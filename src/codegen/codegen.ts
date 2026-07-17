@@ -12,12 +12,17 @@ import {
   isValue,
   JoinEdge,
   MetricCond,
+  metricCondSemiAdditive,
   MExpr,
   modelSet,
+  outMExpr,
+  OutExpr,
+  OutTerm,
+  outTerms,
   Plan,
-  SelectMetric,
   sigCol,
   signature,
+  sigValue,
   SqlResult,
   TransformIR
 } from "../analyzer/ir.js";
@@ -92,6 +97,28 @@ interface Column {
   readonly node: MExpr;
 }
 
+class GridColumns {
+  private readonly byKey = new Map<string, string>();
+  private readonly taken = new Set<string>();
+  private readonly order: Column[] = [];
+
+  public name(term: OutTerm): string {
+    const key = signature(term.expr);
+    const existing = this.byKey.get(key);
+    if (existing !== undefined) return existing;
+    let name = term.baseName;
+    for (let n = 2; this.taken.has(name); n++) name = `${term.baseName}_${n}`;
+    this.taken.add(name);
+    this.byKey.set(key, name);
+    this.order.push({ name, node: term.expr });
+    return name;
+  }
+
+  public columns(): Column[] {
+    return this.order;
+  }
+}
+
 export class Generator {
   private readonly catalog: Catalog;
   private readonly dialect: SqlDialect;
@@ -162,30 +189,33 @@ export class Generator {
   }
 
   private genWindowed(plan: Plan): SqlResult {
-    const fact = plan.facts[0]!;
     const params = new ParamBag(this.dialect);
-    const bases = new Map<string, MExpr>();
-    for (const select of plan.selects) if (!bases.has(select.baseName)) bases.set(select.baseName, select.expr);
-    const columns = [...bases].map(([name, expr]) => ({ name, node: expr }));
+    const grid = new GridColumns();
+    const terms = plan.selects.flatMap((select) => outTerms(select.out));
+    for (const term of terms) grid.name(term);
 
-    const grid = this.aggregationBody(fact, plan.dims, columns, params);
-    const ctes = [`${GRID_CTE} AS (\n  ${grid.join("\n  ")}\n)`];
+    const ctes = this.gridCtes(plan, grid, params);
 
     const timeDim = plan.dims.find((dim) => dim.grain !== undefined);
-    const hasSeries = plan.selects.some((s) => s.transform !== undefined && !SERIESLESS_TRANSFORMS.has(s.transform.kind));
+    const hasSeries = terms.some((t) => t.transform !== undefined && !SERIESLESS_TRANSFORMS.has(t.transform.kind));
     const densify = hasSeries && timeDim !== undefined && this.dialect.periodSeries !== undefined;
     const source = densify ? DENSE_CTE : GRID_CTE;
 
-    if (densify) ctes.push(...this.densifyCtes(plan, timeDim!, [...bases.keys()]));
+    let recursive = false;
+    if (densify) {
+      const dense = this.densifyCtes(plan, timeDim!, grid.columns().map((c) => c.name));
+      ctes.push(...dense.ctes);
+      recursive = dense.recursive;
+    }
 
     const outer: string[] = [];
     for (const dim of plan.dims) outer.push(this.dialect.ident(dim.outputName));
     for (const select of plan.selects) {
-      outer.push(`${this.renderWindow(select, source)} AS ${this.dialect.ident(select.name)}`);
+      outer.push(`${this.renderOut(select.out, source, grid)} AS ${this.dialect.ident(select.name)}`);
     }
 
     const lines: string[] = [];
-    lines.push(`WITH ${ctes.join(",\n")}`);
+    lines.push(`WITH ${recursive ? "RECURSIVE " : ""}${ctes.join(",\n")}`);
     lines.push(`SELECT ${outer.join(", ")}`);
     lines.push(`FROM ${source}`);
     if (plan.orderBy !== undefined) {
@@ -196,7 +226,27 @@ export class Generator {
     return { sql: `${lines.join("\n")};`, params: params.collect() };
   }
 
-  private densifyCtes(plan: Plan, timeDim: DimPlan, baseNames: string[]): string[] {
+  private gridCtes(plan: Plan, grid: GridColumns, params: ParamBag): string[] {
+    if (plan.strategy === "single") {
+      const body = this.aggregationBody(plan.facts[0]!, plan.dims, grid.columns(), params);
+      return [`${GRID_CTE} AS (\n  ${body.join("\n  ")}\n)`];
+    }
+
+    const registries = new Map<string, Registry>();
+    for (const fact of plan.facts) registries.set(fact.model, { order: [], byKey: new Map() });
+    for (const column of grid.columns()) this.discover(column.node, plan, registries);
+
+    const ctes = plan.facts.map((fact) => this.renderCte(fact, plan, registries.get(fact.model)!, params));
+    const selectItems = plan.dims.map((dim) => this.dialect.ident(dim.outputName));
+    for (const column of grid.columns()) {
+      selectItems.push(`${this.finalExpr(column.node, plan, registries)} AS ${this.dialect.ident(column.name)}`);
+    }
+    const combined = [`SELECT ${selectItems.join(", ")}`, ...this.renderFactJoins(plan)];
+    ctes.push(`${GRID_CTE} AS (\n  ${combined.join("\n  ")}\n)`);
+    return ctes;
+  }
+
+  private densifyCtes(plan: Plan, timeDim: DimPlan, baseNames: string[]): { ctes: string[]; recursive: boolean } {
     const time = this.dialect.ident(timeDim.outputName);
     const partitionDims = plan.dims.filter((dim) => dim.outputName !== timeDim.outputName);
     const partitionIdents = partitionDims.map((dim) => this.dialect.ident(dim.outputName));
@@ -207,7 +257,7 @@ export class Generator {
     const period = this.dialect.ident(SPINE_PERIOD_COL);
 
     const spineSelect = [`${period} AS ${time}`, ...partitionIdents.map((id) => `combos.${id} AS ${id}`)];
-    const spineLines = [`SELECT ${spineSelect.join(", ")}`, `FROM ${series}`];
+    const spineLines = [`SELECT ${spineSelect.join(", ")}`, `FROM ${series.from}`];
     if (partitionIdents.length > 0) {
       spineLines.push(`CROSS JOIN (SELECT DISTINCT ${partitionIdents.join(", ")} FROM ${GRID_CTE}) AS combos`);
     }
@@ -225,14 +275,27 @@ export class Generator {
       `LEFT JOIN ${GRID_CTE} ON ${joinKeys.join(" AND ")}`
     ];
 
-    return [`${SPINE_CTE} AS (\n  ${spineLines.join("\n  ")}\n)`, `${DENSE_CTE} AS (\n  ${denseLines.join("\n  ")}\n)`];
+    return {
+      ctes: [
+        ...(series.ctes ?? []),
+        `${SPINE_CTE} AS (\n  ${spineLines.join("\n  ")}\n)`,
+        `${DENSE_CTE} AS (\n  ${denseLines.join("\n  ")}\n)`
+      ],
+      recursive: series.recursive === true
+    };
   }
 
-  private renderWindow(select: SelectMetric, source: string): string {
-    const x = `${source}.${this.dialect.ident(select.baseName)}`;
-    const t = select.transform;
-    if (t === undefined) return x;
-    return this.renderTransform(x, t);
+  private renderOut(out: OutExpr, source: string, grid: GridColumns): string {
+    switch (out.k) {
+      case "num":
+        return String(out.value);
+      case "bin":
+        return this.renderArith(out.op, this.renderOut(out.left, source, grid), this.renderOut(out.right, source, grid));
+      case "term": {
+        const x = `${source}.${this.dialect.ident(grid.name(out))}`;
+        return out.transform === undefined ? x : this.renderTransform(x, out.transform);
+      }
+    }
   }
 
   private renderTransform(x: string, t: TransformIR): string {
@@ -293,16 +356,16 @@ export class Generator {
     return `${this.dialect.qualifiedName(this.tableOf(model))} AS ${this.alias(model)}`;
   }
 
-  private aggregationBody(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
-    if (columns.some((column) => hasSemiAdditive(column.node))) {
-      return this.semiAggregation(fact, dims, columns, params);
+  private aggregationBody(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag, having?: MetricCond): string[] {
+    if (columns.some((column) => hasSemiAdditive(column.node)) || (having !== undefined && metricCondSemiAdditive(having))) {
+      return this.semiAggregation(fact, dims, columns, params, having);
     }
     return fact.fannedOut === true
-      ? this.dedupedAggregation(fact, dims, columns, params)
-      : this.directAggregation(fact, dims, columns, params);
+      ? this.dedupedAggregation(fact, dims, columns, params, having)
+      : this.directAggregation(fact, dims, columns, params, having);
   }
 
-  private semiAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+  private semiAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag, having?: MetricCond): string[] {
     const alias = this.alias(fact.model);
     const dimExprs = dims.map((dim) => this.renderDim(dim, fact.model, params));
     const partition = dimExprs.length > 0 ? `PARTITION BY ${dimExprs.join(", ")}` : "";
@@ -311,6 +374,10 @@ export class Generator {
     const outerColumns = columns.map(
       (column) => `${this.renderSemiOuter(column.node, alias, bindings, params)} AS ${this.dialect.ident(column.name)}`
     );
+    const havingSql =
+      having === undefined
+        ? undefined
+        : this.renderMetricCond(having, params, (node) => this.renderSemiOuter(node, alias, bindings, params));
 
     const dimProjections = dims.map((dim, i) => `${dimExprs[i]} AS ${this.dialect.ident(dim.outputName)}`);
     const inner = [
@@ -327,6 +394,7 @@ export class Generator {
 
     const lines = [`SELECT ${selectItems.join(", ")}`, `FROM (`, `  ${inner.join("\n  ")}`, `) AS ${alias}`];
     if (outerDims.length > 0) lines.push(`GROUP BY ${outerDims.join(", ")}`);
+    if (havingSql !== undefined) lines.push(`HAVING ${havingSql}`);
     return lines;
   }
 
@@ -351,7 +419,7 @@ export class Generator {
     return node.filter !== undefined ? `CASE WHEN ${this.renderCond(node.filter, params)} THEN ${argSql} END` : argSql;
   }
 
-  private directAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+  private directAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag, having?: MetricCond): string[] {
     const dimExprs = dims.map((dim) => this.renderDim(dim, fact.model, params));
     const selectItems = dims.map((dim, i) => `${dimExprs[i]} AS ${this.dialect.ident(dim.outputName)}`);
     for (const column of columns) {
@@ -361,10 +429,13 @@ export class Generator {
     const lines = [`SELECT ${selectItems.join(", ")}`, `FROM ${this.tableRef(fact.model)}`, ...this.renderJoins(fact)];
     if (fact.filter !== undefined) lines.push(`WHERE ${this.renderCond(fact.filter, params)}`);
     if (dimExprs.length > 0) lines.push(`GROUP BY ${dimExprs.join(", ")}`);
+    if (having !== undefined) {
+      lines.push(`HAVING ${this.renderMetricCond(having, params, (node) => this.renderMExpr(node, params))}`);
+    }
     return lines;
   }
 
-  private dedupedAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag): string[] {
+  private dedupedAggregation(fact: FactPlan, dims: DimPlan[], columns: Column[], params: ParamBag, having?: MetricCond): string[] {
     const alias = this.alias(fact.model);
     const pkColumn = this.catalog.models.get(fact.model)!.primaryKey;
     const values = new Map<string, string>();
@@ -377,7 +448,7 @@ export class Generator {
     const project = (node: MExpr): MExpr => {
       if (node.k === "bin") return { k: "bin", op: node.op, left: project(node.left), right: project(node.right) };
       if (node.k === "num") return node;
-      const key = signature(node);
+      const key = sigValue(node);
       let valueAlias = values.get(key);
       if (valueAlias === undefined) {
         valueAlias = `${DEDUP_VALUE_PREFIX}${values.size}`;
@@ -393,6 +464,10 @@ export class Generator {
     const outerColumns = columns.map(
       (column) => `${this.renderMExpr(project(column.node), params)} AS ${this.dialect.ident(column.name)}`
     );
+    const havingSql =
+      having === undefined
+        ? undefined
+        : this.renderMetricCond(having, params, (node) => this.renderMExpr(project(node), params));
 
     const pkProjection = `${alias}.${this.dialect.ident(pkColumn)} AS ${this.dialect.ident(DEDUP_KEY_ALIAS)}`;
     const inner = [
@@ -407,16 +482,16 @@ export class Generator {
 
     const lines = [`SELECT ${selectItems.join(", ")}`, `FROM (`, `  ${inner.join("\n  ")}`, `) AS ${alias}`];
     if (outerDims.length > 0) lines.push(`GROUP BY ${outerDims.join(", ")}`);
+    if (havingSql !== undefined) lines.push(`HAVING ${havingSql}`);
     return lines;
   }
 
   private genSingle(plan: Plan): SqlResult {
     const fact = plan.facts[0]!;
     const params = new ParamBag(this.dialect);
-    const columns = plan.selects.map((select) => ({ name: select.name, node: select.expr }));
+    const columns = plan.selects.map((select) => ({ name: select.name, node: outMExpr(select.out) }));
 
-    const lines = this.aggregationBody(fact, plan.dims, columns, params);
-    if (plan.having !== undefined) lines.push(`HAVING ${this.renderMetricCond(plan.having, params)}`);
+    const lines = this.aggregationBody(fact, plan.dims, columns, params, plan.having);
     if (plan.orderBy !== undefined) {
       lines.push(`ORDER BY ${this.dialect.ident(plan.orderBy.name)} ${plan.orderBy.dir.toUpperCase()}`);
     }
@@ -430,7 +505,7 @@ export class Generator {
     const registries = new Map<string, Registry>();
     for (const fact of plan.facts) registries.set(fact.model, { order: [], byKey: new Map() });
 
-    for (const select of plan.selects) this.discover(select.expr, plan, registries);
+    for (const select of plan.selects) this.discover(outMExpr(select.out), plan, registries);
 
     const cteLines: string[] = [];
     for (const fact of plan.facts) {
@@ -440,7 +515,7 @@ export class Generator {
     const finalSelect: string[] = [];
     for (const dim of plan.dims) finalSelect.push(this.dialect.ident(dim.outputName));
     for (const select of plan.selects) {
-      finalSelect.push(`${this.finalExpr(select.expr, plan, registries)} AS ${this.dialect.ident(select.name)}`);
+      finalSelect.push(`${this.finalExpr(outMExpr(select.out), plan, registries)} AS ${this.dialect.ident(select.name)}`);
     }
 
     const lines: string[] = [];
@@ -574,18 +649,18 @@ export class Generator {
     return aggIsApprox(func) ? this.dialect.approxQuantile?.(valueSql, fraction) ?? exact : exact;
   }
 
-  private renderMetricCond(cond: MetricCond, params: ParamBag): string {
+  private renderMetricCond(cond: MetricCond, params: ParamBag, value: (node: MExpr) => string): string {
     switch (cond.k) {
       case "cmp":
-        return `${this.renderMExpr(cond.left, params)} ${CMP_SQL.get(cond.op)!} ${params.add(cond.right.value)}`;
+        return `${value(cond.left)} ${CMP_SQL.get(cond.op)!} ${params.add(cond.right.value)}`;
       case "and":
-        return `(${this.renderMetricCond(cond.left, params)} AND ${this.renderMetricCond(cond.right, params)})`;
+        return `(${this.renderMetricCond(cond.left, params, value)} AND ${this.renderMetricCond(cond.right, params, value)})`;
       case "or":
-        return `(${this.renderMetricCond(cond.left, params)} OR ${this.renderMetricCond(cond.right, params)})`;
+        return `(${this.renderMetricCond(cond.left, params, value)} OR ${this.renderMetricCond(cond.right, params, value)})`;
       case "not":
-        return `NOT COALESCE((${this.renderMetricCond(cond.operand, params)}), FALSE)`;
+        return `NOT COALESCE((${this.renderMetricCond(cond.operand, params, value)}), FALSE)`;
       case "between":
-        return `${this.renderMExpr(cond.left, params)} BETWEEN ${params.add(cond.lo.value)} AND ${params.add(cond.hi.value)}`;
+        return `${value(cond.left)} BETWEEN ${params.add(cond.lo.value)} AND ${params.add(cond.hi.value)}`;
     }
   }
 
@@ -651,7 +726,7 @@ class SemiBindings {
   constructor(private readonly dialect: SqlDialect, private readonly partition: string) {}
 
   public value(node: Extract<MExpr, { k: "agg" }>, render: () => string): string {
-    return this.intern(this.values, this.valueProjections, signature(node), DEDUP_VALUE_PREFIX, render);
+    return this.intern(this.values, this.valueProjections, sigValue(node), DEDUP_VALUE_PREFIX, render);
   }
 
   public order(col: ColExpr, sql: string): string {

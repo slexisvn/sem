@@ -20,9 +20,14 @@ import {
   MeasureDecl,
   MemberExpr,
   MetricDecl,
+  HierarchyDecl,
+  HierarchyLevel,
   MetricSelect,
   ModelDecl,
   NodeKind,
+  ArithBinaryOp,
+  SelectExpr,
+  SelectItem,
   OrderByClause,
   PolicyDecl,
   Program,
@@ -34,6 +39,7 @@ import {
   TransformCall,
   UnaryExpr
 } from "../ast/nodes.js";
+import { printRef } from "../ast/print.js";
 import { TRANSFORM_NAMES } from "../config/constants.js";
 import { DISTINCT_KEYWORD } from "../config/aggregates.js";
 import { SEMI_RULE_ORDER, SemiRule } from "../config/additivity.js";
@@ -65,6 +71,12 @@ const INFIX: ReadonlyMap<TokKind, InfixOp> = new Map([
   [TokKind.Star, { op: "*", lbp: 9, rbp: 10 }],
   [TokKind.Slash, { op: "/", lbp: 9, rbp: 10 }]
 ]);
+
+const ARITH_TOKENS: ReadonlySet<TokKind> = new Set([TokKind.Plus, TokKind.Minus, TokKind.Star, TokKind.Slash]);
+
+const ARITH_INFIX: ReadonlyMap<TokKind, InfixOp> = new Map(
+  [...INFIX].filter(([kind]) => ARITH_TOKENS.has(kind))
+);
 
 const CMP_TOKENS: ReadonlySet<TokKind> = new Set([
   TokKind.Eq,
@@ -141,13 +153,14 @@ export class Parser {
           asserts.push(this.parseAssert());
           break;
         case TokKind.Materialize:
+        case TokKind.Rollup:
           materializes.push(this.parseMaterialize());
           break;
         default: {
           const token = this.peek();
           throw new SemError(
             DiagCode.ParseError,
-            `expected 'model', 'policy', 'assert', or 'materialize' but found '${token.text || token.kind}'`,
+            `expected 'model', 'policy', 'assert', 'materialize', or 'rollup' but found '${token.text || token.kind}'`,
             token.span
           );
         }
@@ -219,7 +232,7 @@ export class Parser {
   }
 
   private parseQueryAfterShow(start: Span, expectEof: boolean): QueryDecl {
-    const metrics = this.parseMetricSelectList();
+    const metrics = this.parseSelectItemList();
 
     const dimensions: RefExpr[] = [];
     if (this.at(TokKind.By)) {
@@ -292,6 +305,7 @@ export class Parser {
     const measures: MeasureDecl[] = [];
     const metrics: MetricDecl[] = [];
     const segments: SegmentDecl[] = [];
+    const hierarchies: HierarchyDecl[] = [];
 
     while (!this.at(TokKind.RBrace) && !this.at(TokKind.Eof)) {
       switch (this.peek().kind) {
@@ -332,6 +346,9 @@ export class Parser {
         case TokKind.Segment:
           segments.push(this.parseSegment());
           break;
+        case TokKind.Hierarchy:
+          hierarchies.push(this.parseHierarchy());
+          break;
         default: {
           const token = this.peek();
           throw new SemError(
@@ -371,8 +388,33 @@ export class Parser {
       measures,
       metrics,
       segments,
+      hierarchies,
       span: this.spanFrom(start)
     };
+  }
+
+  private parseHierarchy(): HierarchyDecl {
+    const start = this.peek().span;
+    this.expect(TokKind.Hierarchy, "'hierarchy'");
+    const nameTok = this.expect(TokKind.Ident, "a hierarchy name");
+    this.expect(TokKind.Eq, "'='");
+    const levels: HierarchyLevel[] = [this.parseHierarchyLevel()];
+    while (this.at(TokKind.Gt)) {
+      this.next();
+      levels.push(this.parseHierarchyLevel());
+    }
+    return {
+      kind: NodeKind.Hierarchy,
+      name: nameTok.text,
+      nameSpan: nameTok.span,
+      levels,
+      span: this.spanFrom(start)
+    };
+  }
+
+  private parseHierarchyLevel(): HierarchyLevel {
+    const token = this.expect(TokKind.Ident, "a dimension name");
+    return { name: token.text, span: token.span };
   }
 
   private parseSegment(): SegmentDecl {
@@ -584,13 +626,61 @@ export class Parser {
     return ref;
   }
 
-  private parseMetricSelectList(): MetricSelect[] {
-    const items: MetricSelect[] = [this.parseMetricSelect()];
+  private parseSelectItemList(): SelectItem[] {
+    const items: SelectItem[] = [this.parseSelectItem()];
     while (this.at(TokKind.Comma)) {
       this.next();
-      items.push(this.parseMetricSelect());
+      items.push(this.parseSelectItem());
     }
     return items;
+  }
+
+  private parseSelectItem(): SelectItem {
+    const expr = this.parseSelectExpr(0);
+    if (!this.at(TokKind.As)) {
+      return { kind: NodeKind.SelectItem, expr, span: expr.span };
+    }
+    this.next();
+    const nameTok = this.expect(TokKind.Ident, "a column name after 'as'");
+    return {
+      kind: NodeKind.SelectItem,
+      expr,
+      alias: nameTok.text,
+      aliasSpan: nameTok.span,
+      span: { start: expr.span.start, end: nameTok.span.end }
+    };
+  }
+
+  private parseSelectExpr(minBp: number): SelectExpr {
+    let left = this.parseSelectOperand();
+    for (;;) {
+      const info = ARITH_INFIX.get(this.peek().kind);
+      if (info === undefined || info.lbp < minBp) break;
+      this.next();
+      const right = this.parseSelectExpr(info.rbp);
+      left = {
+        kind: NodeKind.SelectBinary,
+        op: info.op as ArithBinaryOp,
+        left,
+        right,
+        span: { start: left.span.start, end: right.span.end }
+      };
+    }
+    return left;
+  }
+
+  private parseSelectOperand(): SelectExpr {
+    if (this.at(TokKind.LParen)) {
+      this.next();
+      const inner = this.parseSelectExpr(0);
+      this.expect(TokKind.RParen, "')'");
+      return inner;
+    }
+    if (this.at(TokKind.Number)) {
+      const token = this.next();
+      return { kind: NodeKind.SelectNumber, value: token.value as number, span: token.span };
+    }
+    return this.parseMetricSelect();
   }
 
   private parseMetricSelect(): MetricSelect {
@@ -697,8 +787,9 @@ export class Parser {
 
   private parseMaterialize(): MaterializeDecl {
     const start = this.peek().span;
-    this.expect(TokKind.Materialize, "'materialize'");
-    const nameTok = this.expect(TokKind.Ident, "a materialized view name");
+    const serves = this.at(TokKind.Rollup);
+    this.next();
+    const nameTok = this.expect(TokKind.Ident, serves ? "a rollup name" : "a materialized view name");
     this.expect(TokKind.As, "'as'");
     const show = this.expect(TokKind.Show, "'show'");
     const query = this.parseQueryAfterShow(show.span, false);
@@ -706,6 +797,7 @@ export class Parser {
       kind: NodeKind.Materialize,
       name: nameTok.text,
       nameSpan: nameTok.span,
+      serves,
       query,
       span: this.spanFrom(start)
     };
@@ -875,6 +967,13 @@ export class Parser {
         };
         node = member;
       } else if (this.at(TokKind.LParen)) {
+        if (node.kind === NodeKind.Member && TRANSFORM_NAMES.has(node.name)) {
+          throw new SemError(
+            DiagCode.Unsupported,
+            `transform '.${node.name}' reads across the rows of a result, so it belongs in a 'show', not in a definition; write 'show ${printRef(node.object as RefExpr)}.${node.name}(...)' instead`,
+            node.span
+          );
+        }
         if (node.kind !== NodeKind.Ident) {
           throw new SemError(DiagCode.ParseError, "call target must be a function name", node.span);
         }

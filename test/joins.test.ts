@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { catalogFromSource, compileWithCatalog } from "../src/index.js";
 import { CHAIN, GOVERNED } from "./fixtures.js";
 
-describe("phase 2 join resolution", () => {
+describe("join resolution walks the model graph", () => {
   test("multi-hop join path: LineItems → Orders → Customers", () => {
     const { sql } = compileWithCatalog(catalogFromSource(CHAIN), "show units by Customers.country");
     expect(sql).toContain("FROM public.line_items AS lineitems");

@@ -2,6 +2,7 @@ import { AggFunc, ArithOp, CmpOp, DimType, fiscalOffset, TimeFrame, TimeGrain, T
 import { ReAgg } from "../config/aggregates.js";
 import { Additivity } from "../config/additivity.js";
 import { Unit } from "../config/units.js";
+import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
 
 export interface ColRef {
@@ -99,11 +100,53 @@ export type TransformIR =
   | { readonly kind: TransformKind.Share; readonly partition: string[] }
   | { readonly kind: TransformKind.Of; readonly combinator: ReAgg; readonly partition: string[] };
 
-export interface SelectMetric {
-  readonly name: string;
+export interface OutTerm {
+  readonly k: "term";
   readonly baseName: string;
   readonly expr: MExpr;
   readonly transform?: TransformIR;
+}
+
+export type OutExpr =
+  | OutTerm
+  | { readonly k: "bin"; readonly op: ArithOp; readonly left: OutExpr; readonly right: OutExpr }
+  | { readonly k: "num"; readonly value: number };
+
+export interface SelectMetric {
+  readonly name: string;
+  readonly out: OutExpr;
+}
+
+export function outTerms(out: OutExpr, into: OutTerm[] = []): OutTerm[] {
+  switch (out.k) {
+    case "term":
+      into.push(out);
+      return into;
+    case "bin":
+      outTerms(out.left, into);
+      outTerms(out.right, into);
+      return into;
+    case "num":
+      return into;
+  }
+}
+
+export function outWindowed(out: OutExpr): boolean {
+  return outTerms(out).some((term) => term.transform !== undefined);
+}
+
+export function outMExpr(out: OutExpr): MExpr {
+  switch (out.k) {
+    case "term":
+      if (out.transform !== undefined) {
+        throw new SemError(DiagCode.Unsupported, `'${out.baseName}' needs a window, so this query cannot be a plain aggregate`);
+      }
+      return out.expr;
+    case "bin":
+      return { k: "bin", op: out.op, left: outMExpr(out.left), right: outMExpr(out.right) };
+    case "num":
+      return { k: "num", value: out.value };
+  }
 }
 
 export interface Plan {
@@ -170,6 +213,19 @@ export function hasSemiAdditive(expr: MExpr): boolean {
   }
 }
 
+export function metricCondSemiAdditive(cond: MetricCond): boolean {
+  switch (cond.k) {
+    case "cmp":
+    case "between":
+      return hasSemiAdditive(cond.left);
+    case "and":
+    case "or":
+      return metricCondSemiAdditive(cond.left) || metricCondSemiAdditive(cond.right);
+    case "not":
+      return metricCondSemiAdditive(cond.operand);
+  }
+}
+
 export function modelSet(expr: MExpr, into: Set<string> = new Set()): Set<string> {
   switch (expr.k) {
     case "agg":
@@ -191,11 +247,28 @@ export function isValue(node: ColExpr | ValueRef): node is ValueRef {
 export function signature(node: MExpr): string {
   switch (node.k) {
     case "agg":
-      return `${node.func}${node.quantile !== undefined ? ":" + node.quantile : ""}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}`;
+      return `${node.func}${node.quantile !== undefined ? ":" + node.quantile : ""}(${node.distinct ? "distinct " : ""}${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""})@${node.model}${sigAdd(node)}`;
     case "bin":
       return `(${signature(node.left)}${node.op}${signature(node.right)})`;
     case "num":
       return `#${node.value}`;
+  }
+}
+
+export function sigValue(node: Extract<MExpr, { k: "agg" }>): string {
+  return `${sigCol(node.arg)}${node.filter !== undefined ? "|" + sigCond(node.filter) : ""}`;
+}
+
+function sigAdd(node: Extract<MExpr, { k: "agg" }>): string {
+  const add = node.add;
+  if (add === undefined) return "";
+  switch (add.kind) {
+    case "semi":
+      return `~semi:${add.rule}:${add.reduce}:${sigCol(node.semiCol!)}`;
+    case "additive":
+      return `~add:${add.reduce}`;
+    case "none":
+      return "~none";
   }
 }
 

@@ -1,10 +1,10 @@
 import { Additivity, fromReAgg, meetAdditivity, NON_ADDITIVE } from "../config/additivity.js";
 import { aggReAgg } from "../config/aggregates.js";
-import { ArithOp } from "../config/constants.js";
+import { ArithOp, TRANSFORM_RESULT } from "../config/constants.js";
 import { DIMENSIONLESS, divUnit, formatUnit, mulUnit, Unit, unitEquals } from "../config/units.js";
 import { DiagCode, SemError } from "../diagnostics/diagnostic.js";
 import { Span } from "../lexer/token.js";
-import { MExpr } from "./ir.js";
+import { MExpr, OutExpr } from "./ir.js";
 
 export interface MetricType {
   readonly unit: Unit | undefined;
@@ -19,6 +19,21 @@ export function typeOf(expr: MExpr, span: Span): MetricType {
       return { unit: DIMENSIONLESS, add: NON_ADDITIVE };
     case "bin":
       return combine(expr.op, typeOf(expr.left, span), typeOf(expr.right, span), span);
+  }
+}
+
+export function typeOfOut(out: OutExpr, span: Span): MetricType {
+  switch (out.k) {
+    case "term": {
+      const base = typeOf(out.expr, span);
+      if (out.transform === undefined) return base;
+      const result = TRANSFORM_RESULT.get(out.transform.kind)!;
+      return { unit: result === "ratio" ? DIMENSIONLESS : base.unit, add: NON_ADDITIVE };
+    }
+    case "num":
+      return { unit: DIMENSIONLESS, add: NON_ADDITIVE };
+    case "bin":
+      return combine(out.op, typeOfOut(out.left, span), typeOfOut(out.right, span), span);
   }
 }
 

@@ -1,5 +1,5 @@
-import { calendarGrain, CalendarGrain, TimeGrain } from "../config/constants.js";
-import { BaseDialect, lateralAsOf, quoteZone } from "./dialect.js";
+import { calendarGrain, CalendarGrain, SPINE_SEQ_CTE, TimeGrain } from "../config/constants.js";
+import { BaseDialect, lateralAsOf, PeriodSeries, quoteZone } from "./dialect.js";
 
 const UTC = "'UTC'";
 
@@ -40,6 +40,19 @@ export class MySqlDialect extends BaseDialect {
 
   public asOfLateral(table: string, alias: string, keyPred: string, tsPred: string, order: string): string {
     return lateralAsOf(table, alias, keyPred, tsPred, order);
+  }
+
+  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): PeriodSeries {
+    const { count, unit } = this.step(grain);
+    const column = this.ident(columnAlias);
+    const next = `DATE_ADD(${column}, INTERVAL ${count} ${unit.toUpperCase()})`;
+    const seed = `SELECT ${startExpr} AS ${column}`;
+    const step = `SELECT ${next} FROM ${SPINE_SEQ_CTE} WHERE ${next} <= ${endExpr}`;
+    return {
+      from: SPINE_SEQ_CTE,
+      ctes: [`${SPINE_SEQ_CTE} AS (\n  ${seed}\n  UNION ALL\n  ${step}\n)`],
+      recursive: true
+    };
   }
 
   public periodDiff(grain: TimeGrain, later: string, earlier: string): string {

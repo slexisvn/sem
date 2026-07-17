@@ -9,6 +9,7 @@ export enum NodeKind {
   Measure = "Measure",
   Metric = "Metric",
   Segment = "Segment",
+  Hierarchy = "Hierarchy",
   Query = "Query",
   Ident = "Ident",
   Member = "Member",
@@ -19,6 +20,9 @@ export enum NodeKind {
   Between = "Between",
   In = "In",
   MetricSelect = "MetricSelect",
+  SelectBinary = "SelectBinary",
+  SelectNumber = "SelectNumber",
+  SelectItem = "SelectItem",
   Policy = "Policy",
   Assert = "Assert",
   Materialize = "Materialize",
@@ -27,7 +31,8 @@ export enum NodeKind {
 }
 
 export type LiteralType = "string" | "number" | "boolean";
-export type BinaryOp = "+" | "-" | "*" | "/" | "=" | "!=" | "<" | "<=" | ">" | ">=" | "and" | "or" | "like";
+export type ArithBinaryOp = "+" | "-" | "*" | "/";
+export type BinaryOp = ArithBinaryOp | "=" | "!=" | "<" | "<=" | ">" | ">=" | "and" | "or" | "like";
 export type UnaryOp = "-" | "not";
 
 export interface IdentExpr {
@@ -162,6 +167,19 @@ export interface SegmentDecl {
   readonly span: Span;
 }
 
+export interface HierarchyLevel {
+  readonly name: string;
+  readonly span: Span;
+}
+
+export interface HierarchyDecl {
+  readonly kind: NodeKind.Hierarchy;
+  readonly name: string;
+  readonly nameSpan: Span;
+  readonly levels: HierarchyLevel[];
+  readonly span: Span;
+}
+
 export interface ModelDecl {
   readonly kind: NodeKind.Model;
   readonly name: string;
@@ -177,6 +195,7 @@ export interface ModelDecl {
   readonly measures: MeasureDecl[];
   readonly metrics: MetricDecl[];
   readonly segments: SegmentDecl[];
+  readonly hierarchies: HierarchyDecl[];
   readonly span: Span;
 }
 
@@ -210,6 +229,30 @@ export interface MetricSelect {
   readonly span: Span;
 }
 
+export interface SelectBinaryExpr {
+  readonly kind: NodeKind.SelectBinary;
+  readonly op: ArithBinaryOp;
+  readonly left: SelectExpr;
+  readonly right: SelectExpr;
+  readonly span: Span;
+}
+
+export interface SelectNumberExpr {
+  readonly kind: NodeKind.SelectNumber;
+  readonly value: number;
+  readonly span: Span;
+}
+
+export type SelectExpr = MetricSelect | SelectBinaryExpr | SelectNumberExpr;
+
+export interface SelectItem {
+  readonly kind: NodeKind.SelectItem;
+  readonly expr: SelectExpr;
+  readonly alias?: string;
+  readonly aliasSpan?: Span;
+  readonly span: Span;
+}
+
 export interface OrderByClause {
   readonly metric: MetricSelect;
   readonly dir: SortDir;
@@ -217,7 +260,7 @@ export interface OrderByClause {
 
 export interface QueryDecl {
   readonly kind: NodeKind.Query;
-  readonly metrics: MetricSelect[];
+  readonly metrics: SelectItem[];
   readonly dimensions: RefExpr[];
   readonly where?: Expr;
   readonly having?: Expr;
@@ -252,6 +295,7 @@ export interface MaterializeDecl {
   readonly kind: NodeKind.Materialize;
   readonly name: string;
   readonly nameSpan: Span;
+  readonly serves: boolean;
   readonly query: QueryDecl;
   readonly span: Span;
 }

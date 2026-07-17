@@ -118,7 +118,7 @@ describe("which grains a period-to-date window may run over", () => {
 
 describe("pre-aggregates over fiscal periods", () => {
   const MV = `${APRIL}
-materialize daily as show revenue by region, ordered_at.day
+rollup daily as show revenue by region, ordered_at.day
 `;
 
   test("a daily pre-aggregate rolls up into fiscal years, because days nest inside them", () => {

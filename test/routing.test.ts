@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { compile } from "../src/index.js";
+import { catalogFromSource, compile, DiagCode } from "../src/index.js";
 
 const SALES = `
 model Orders {
@@ -16,7 +16,7 @@ model Orders {
   metric aov = revenue / orders
   metric peak = amount_max
 }
-materialize daily_orders as show revenue, orders, aov, peak by region, status, ordered_at.day
+rollup daily_orders as show revenue, orders, aov, peak by region, status, ordered_at.day
 `;
 
 const run = (query: string, models: string = SALES) => compile(models, query);
@@ -137,7 +137,7 @@ model Balances {
   metric balance = bal
   metric fees = fee
 }
-materialize daily_bal as show balance, fees by account, region, snapshot_at.day
+rollup daily_bal as show balance, fees by account, region, snapshot_at.day
 `;
 
   test("a semi-additive balance is refused a roll-up and is recomputed from the fact table instead", () => {
@@ -172,7 +172,7 @@ model Items {
   primary_key id
   dimension sku: string = sku
 }
-materialize by_sku as show revenue by region, sku
+rollup by_sku as show revenue by region, sku
 `;
 
   test("a pre-aggregate built across a fan-out join repeats each order per sku, so summing it away is refused", () => {
@@ -198,8 +198,8 @@ model Orders {
   measure gross = sum(amount)
   metric revenue = gross
 }
-materialize wide as show revenue by region, status, ordered_at.day
-materialize narrow as show revenue by region
+rollup wide as show revenue by region, status, ordered_at.day
+rollup narrow as show revenue by region
 `;
 
   test("the narrowest pre-aggregate that can answer the query is the one that gets read", () => {
@@ -223,7 +223,7 @@ model Orders {
   metric revenue = gross
 }
 policy vn_only on Orders restrict region = 'VN'
-materialize vn_daily as show revenue by region, status
+rollup vn_daily as show revenue by region, status
 `;
 
   test("a pre-aggregate that baked in the same policy the query applies needs no filter of its own", () => {
@@ -254,7 +254,7 @@ model Orders {
   measure gross = sum(amount)
   metric revenue = gross
 }
-materialize paid_only as show revenue by region where status = 'paid'
+rollup paid_only as show revenue by region where status = 'paid'
 `;
 
   test("a pre-aggregate restricted to paid orders answers a question restricted the same way", () => {
@@ -290,9 +290,56 @@ describe("routing alongside the rest of the language", () => {
     expect(sql).toContain("LIMIT 5");
   });
 
-  test("turning routing off compiles the same query straight against the fact table", () => {
-    const { sql, routedTo } = compile(SALES, "show revenue by region", { route: false });
+  test("a pre-aggregate declared with 'materialize' is built but never answers a query", () => {
+    const buildOnly = SALES.replace("rollup daily_orders", "materialize daily_orders");
+    const { sql, routedTo } = compile(buildOnly, "show revenue by region");
     expect(routedTo).toBeUndefined();
     expect(sql).toContain("public.orders");
+  });
+
+  test("a schema with no rollup at all reads the fact table rather than failing", () => {
+    const bare = SALES.slice(0, SALES.indexOf("rollup"));
+    const { sql, routedTo } = compile(bare, "show revenue by region");
+    expect(routedTo).toBeUndefined();
+    expect(sql).toContain("public.orders");
+  });
+});
+
+describe("a rollup is checked when it is declared", () => {
+  const declare = (body: string) => () => compile(`${SALES}\nrollup extra as ${body}`, "show revenue by region");
+
+  const codeOf = (run: () => unknown): string | undefined => {
+    try {
+      run();
+      return undefined;
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+  };
+
+  test("a transform compares rows, and no amount of summing gets the comparison back, so it is rejected", () => {
+    expect(codeOf(declare("show revenue.mom() by ordered_at.month"))).toBe(DiagCode.InvalidDefinition);
+  });
+
+  test("a having clause has already thrown groups away, so the rows to aggregate are gone", () => {
+    expect(codeOf(declare("show revenue by region having revenue > 100"))).toBe(DiagCode.InvalidDefinition);
+  });
+
+  test("top keeps only a few groups, so the rest cannot be aggregated back", () => {
+    expect(codeOf(declare("show revenue by region order by revenue desc top 5"))).toBe(DiagCode.InvalidDefinition);
+  });
+
+  test("the refusal points at 'materialize' as the way to build the table without serving from it", () => {
+    expect(declare("show revenue.mom() by ordered_at.month")).toThrow(/declare it with 'materialize'/);
+  });
+
+  test("the refusal arrives when the schema is loaded, without waiting for a query to be asked", () => {
+    const load = () => catalogFromSource(`${SALES}\nrollup extra as show revenue.mom() by ordered_at.month`);
+    expect(codeOf(load)).toBe(DiagCode.InvalidDefinition);
+  });
+
+  test("the same query is fine under 'materialize', which only ever builds", () => {
+    const built = compile(`${SALES}\nmaterialize extra as show revenue.mom() by ordered_at.month`, "show revenue by region");
+    expect(built.routedTo).toBe("daily_orders");
   });
 });

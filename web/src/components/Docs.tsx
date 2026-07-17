@@ -43,6 +43,8 @@ const TOC: Array<{ id: string; label: string }> = [
   { id: "types", label: "Types & additivity" },
   { id: "query", label: "Queries" },
   { id: "transforms", label: "Time transforms" },
+  { id: "inline", label: "Inline expressions" },
+  { id: "hierarchies", label: "Hierarchies" },
   { id: "timezone", label: "Timezones" },
   { id: "fiscal", label: "Fiscal calendars" },
   { id: "funnel", label: "Funnels" },
@@ -280,6 +282,19 @@ metric aov     = gross / orders         # money/count, inferred
 metric broken  = gross + orders         # error: cannot add money and count`}</Code>
 
           <p>
+            Gradual typing has a cost: an unannotated measure unifies with <em>anything</em>, so one
+            missing annotation quietly re-opens the hole units were meant to close. Compile with{" "}
+            <code>{`{ strict: true }`}</code> to require them — any measure a query touches must
+            carry a unit, or the query is refused and points at the declaration to fix.
+          </p>
+          <Code lang="javascript">{`compile(schemaSource, "show revenue by region", { strict: true });
+// [missing-unit] measure 'fee' has no unit ...`}</Code>
+          <p className="docs__note">
+            Strict is per-compile, not a property of the model, so a codebase can turn it on in CI
+            while leaving day-to-day exploration lax.
+          </p>
+
+          <p>
             <strong>Additivity.</strong> By default a measure is additive across every dimension. Mark
             the exceptions:
           </p>
@@ -362,6 +377,84 @@ show revenue.of(region) by region, status           # region subtotal beside eac
             Duration units for <code>rolling</code>: <code>d</code> (day), <code>w</code> (week),{" "}
             <code>m</code> (month), <code>q</code> (quarter), <code>y</code> (year) — e.g.{" "}
             <code>rolling(7d)</code>, <code>rolling(1y)</code>.
+          </p>
+        </Section>
+
+        <Section id="inline" title="Inline expressions">
+          <p>
+            A <code>show</code> takes arithmetic, not just metric names. This is what makes{" "}
+            <code>.of</code> useful: the subtotal is worth having beside the detail, but what you
+            usually want is the <em>ratio</em> to it.
+          </p>
+          <Code>{`show revenue / revenue.of(region) as share_of_region by region, status
+show revenue - revenue.of(region) as gap_to_region by region, status
+show (revenue - revenue.of()) / revenue.of() as vs_total by region
+show revenue / orders as aov by region`}</Code>
+          <p>
+            An inline expression has no name of its own, so <code>as</code> is required. A plain
+            metric already has one; <code>as</code> renames it if you like. <code>order by</code>{" "}
+            takes the name you gave.
+          </p>
+          <p>
+            Each distinct metric is aggregated <strong>once</strong>, no matter how many times it
+            appears. Above, <code>revenue</code> and <code>revenue.of(region)</code> read the same
+            single <code>SUM</code> — one is the row, the other a window over it.
+          </p>
+          <p>
+            Units carry through a transform, so the type system still catches nonsense.{" "}
+            <code>.of</code> and the running totals keep the base unit, while <code>.share</code>,{" "}
+            <code>.mom</code> and <code>.yoy</code> are dimensionless ratios — so{" "}
+            <code>revenue + revenue.of(region)</code> is money, and{" "}
+            <code>revenue + revenue.mom</code> is refused.
+          </p>
+          <p className="docs__note">
+            Transforms belong in a <code>show</code>, not in a <code>metric</code>. A metric body
+            describes one row's value; <code>.of</code> and <code>.mom</code> read <em>across</em>{" "}
+            the rows of a particular result, so they only mean something once the{" "}
+            <code>by</code> dimensions are known.
+          </p>
+        </Section>
+
+        <Section id="hierarchies" title="Hierarchies">
+          <p>
+            A <code>hierarchy</code> names an ordered drill path over dimensions, coarsest first. It
+            is a claim you make about the data: each city sits in one region, each region in one
+            country.
+          </p>
+          <Code>{`model Orders {
+  dimension country: string
+  dimension region: string
+  dimension city: string
+
+  hierarchy geo = country > region > city
+}`}</Code>
+          <p>
+            Pass the hierarchy's name to <code>.of</code> or <code>.share</code> instead of a level,
+            and the subtotal follows the drill: it partitions by the{" "}
+            <strong>nearest level above</strong> whichever level you grouped by. One query text then
+            means "share of my parent" at every depth.
+          </p>
+          <Code>{`show revenue / revenue.of(geo) as share_of_parent by country, region, city  # of its region
+show revenue / revenue.of(geo) as share_of_parent by country, region        # of its country
+show revenue / revenue.of(geo) as share_of_parent by country                # of the grand total`}</Code>
+          <table className="docs__table">
+            <thead>
+              <tr><th>Grouped by</th><th><code>.of(geo)</code> partitions by</th><th>Why</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>country, region, city</code></td><td><code>region</code></td><td>the level above <code>city</code></td></tr>
+              <tr><td><code>country, region</code></td><td><code>country</code></td><td>the level above <code>region</code></td></tr>
+              <tr><td><code>country</code></td><td>— grand total</td><td>nothing is coarser</td></tr>
+              <tr><td><code>country, city</code></td><td><code>country</code></td><td><code>region</code> is not grouped, so the nearest one that is wins</td></tr>
+              <tr><td><code>city</code></td><td>— grand total</td><td>no level above it is grouped</td></tr>
+              <tr><td><code>status</code></td><td>❌ refused</td><td>no level of <code>geo</code> is grouped at all</td></tr>
+            </tbody>
+          </table>
+          <p className="docs__note">
+            Levels must be dimensions of the same model, must not repeat, and must not be a time
+            dimension — time already nests through its grains, and <code>.of(ordered_at.month)</code>{" "}
+            says that better. Naming a level directly still means exactly that level:{" "}
+            <code>.of(country)</code> is always <code>country</code>, drill or no drill.
           </p>
         </Section>
 
@@ -512,8 +605,9 @@ GROUP BY DATE_TRUNC('month', orders.ordered_at AT TIME ZONE 'Asia/Ho_Chi_Minh');
         <Section id="materialize" title="Materialize & assert">
           <p>
             <code>materialize</code> gives a saved query a name — a definition for a table/view you
-            intend to build. <code>assert</code> states an expectation about a metric, useful as a
-            data test.
+            intend to build, and nothing more; queries go on reading the fact tables. To let one
+            answer queries too, declare it a <a href="#routing">rollup</a>. <code>assert</code>{" "}
+            states an expectation about a metric, useful as a data test.
           </p>
           <Code>{`materialize monthly_revenue as
   show revenue, revenue.mom, revenue.rolling(90d) by ordered_at.month
@@ -524,12 +618,21 @@ assert aov where region = 'VN' between 20 and 60`}</Code>
 
         <Section id="routing" title="Pre-aggregate routing">
           <p>
-            A <code>materialize</code> declaration is also a promise about what has been precomputed.
-            The planner will answer a later query from one of them when — and only when — it can
-            recover the same numbers. Nothing else changes: the query you write is the same.
+            Swap <code>materialize</code> for <code>rollup</code> and the view stops being only a
+            thing you build: the planner may now answer a query from it when — and only when — it can
+            recover the same numbers. Nothing else changes, and the query you write is the same.
           </p>
-          <Code>{`materialize daily_orders as
+          <p>
+            The two keywords differ in exactly one way. Both emit the same{" "}
+            <code>CREATE MATERIALIZED VIEW</code>; only <code>rollup</code> lets queries land on it.
+            Saying so is a claim about your warehouse that sem cannot check — it trusts that the view
+            exists and is refreshed — so it is yours to make, in the file, next to the pipeline that
+            builds it. A view you have not started refreshing yet stays a <code>materialize</code>.
+          </p>
+          <Code>{`rollup daily_orders as
   show revenue, orders, aov by region, status, ordered_at.day
+
+# each query below picks its own source:
 
 # reads daily_orders and re-aggregates: SUM(daily_orders.revenue)
 show revenue by region
@@ -577,14 +680,19 @@ show aov by region`}</Code>
             queries under that policy, and is invisible to queries that opt out of it.
           </p>
           <p>
-            When several pre-aggregates could serve a query, the narrowest one wins. The compile
-            result reports which was used, or nothing if the fact table was read directly.
+            When several rollups could serve a query, the narrowest one wins. The compile result
+            reports which was used, or nothing if the fact table was read directly — so you never
+            have to guess where a number came from.
           </p>
           <Code lang="javascript">{`const { sql, routedTo } = compile(schemaSource, "show revenue by region");
-// routedTo === "daily_orders"
-
-// opt out and always read the fact tables
-compile(schemaSource, "show revenue by region", { route: false });`}</Code>
+// routedTo === "daily_orders", or undefined when the fact table answered`}</Code>
+          <p>
+            A rollup's body must be a plain aggregate, and sem checks that where you declare it. A
+            transform compares rows against each other, and <code>having</code> and <code>top</code>{" "}
+            throw groups away — in each case the rows a later query would need are already gone, so
+            the declaration is refused rather than left to sit there never serving anything. Those
+            queries are perfectly good <code>materialize</code> bodies; they just cannot be sources.
+          </p>
         </Section>
 
         <Section id="dialects" title="Dialects">
@@ -611,8 +719,8 @@ const sql = compile(schemaSource, "show revenue by region", {
               <tr><td>Models, metrics, filters, joins, fan-out dedup</td><td>✅</td><td>✅</td><td>✅</td></tr>
               <tr><td>Funnels</td><td>✅</td><td>✅</td><td>✅</td></tr>
               <tr><td>Retention</td><td>✅</td><td>✅</td><td>✅</td></tr>
-              <tr><td>Dense date spine (gap-correct windows)</td><td>✅</td><td>✅</td><td>— falls back to a positional grid</td></tr>
-              <tr><td>As-of joins</td><td>✅</td><td>❌ no lateral join</td><td>✅ 8.0.14+</td></tr>
+              <tr><td>Dense date spine (gap-correct windows)</td><td>✅ <code>generate_series</code></td><td>✅ <code>GENERATE_DATE_ARRAY</code></td><td>✅ <code>WITH RECURSIVE</code></td></tr>
+              <tr><td>As-of joins</td><td>✅ <code>LATERAL</code></td><td>✅ correlated <code>ARRAY</code> subquery</td><td>✅ <code>LATERAL</code>, 8.0.14+</td></tr>
               <tr><td>Exact quantiles (<code>median</code>, <code>percentile</code>)</td><td>✅</td><td>❌ estimator only</td><td>❌</td></tr>
               <tr><td>Approximate quantiles (<code>approx_median</code>, <code>approx_percentile</code>)</td><td>✅ answered exactly</td><td>✅</td><td>❌</td></tr>
               <tr><td>Model <code>timezone</code></td><td>✅ <code>AT TIME ZONE</code></td><td>✅ <code>DATETIME(ts, zone)</code></td><td>✅ <code>CONVERT_TZ</code>, needs tz tables</td></tr>
@@ -620,6 +728,14 @@ const sql = compile(schemaSource, "show revenue by region", {
               <tr><td>Pre-aggregate routing</td><td>✅</td><td>✅</td><td>✅</td></tr>
             </tbody>
           </table>
+          <p className="docs__note">
+            Where an engine lacks a primitive outright, sem refuses the query rather than
+            approximating it. MySQL has no percentile aggregate and no estimator, and an exact
+            quantile there needs a windowed subquery rather than an aggregate call — so quantiles on
+            MySQL are an error, not a guess. MySQL's recursive spine also inherits that engine's{" "}
+            <code>cte_max_recursion_depth</code> (1000 by default), which a long daily range can
+            exceed; it fails loudly rather than returning a short series.
+          </p>
         </Section>
 
         <Section id="reference" title="Grammar reference">
@@ -635,14 +751,16 @@ model <Name> {
   measure <name> [: <unit>] [<additivity>] = <agg>(<column>)
   metric  <name> = <measure | metric expr> [where <filter>]
   segment <name> = <filter>
+  hierarchy <name> = <dimension> > <dimension> [> ...]   # coarsest first
 }
 
 policy <name> on <Model> restrict <filter>
-materialize <name> as <query>
+materialize <name> as <query>          # built only
+rollup <name> as <query>               # built, and queries may be routed to it
 assert <metric> [where <filter>] <== | between .. and ..> <value>
 
 # --- query ---
-show <metric[.transform]> , ...
+show <expr> [as <name>] , ...        # expr: metric[.transform], arithmetic, ( )
   [by <dimension[.grain]> , ...]
   [where <filter>]
   [having <filter>]

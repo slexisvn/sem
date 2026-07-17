@@ -42,7 +42,7 @@ model Users {
   dimension plan: string
 }
 
-materialize daily_active_users as
+rollup daily_active_users as
   show active_users by occurred_at.day
 
 materialize weekly_events as

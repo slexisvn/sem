@@ -36,7 +36,7 @@ model Services {
 materialize traffic_mtd as
   show requests, requests.mtd by received_at.day
 
-materialize latency_trend as
+rollup latency_trend as
   show latency_p50, latency_p95, latency_p99 by received_at.day
 
 assert error_rate where received_at.month = '2026-06' between 0 and 1
@@ -46,4 +46,5 @@ assert error_rate where received_at.month = '2026-06' between 0 and 1
 #   show error_rate by Services.team                   # ratio metric across a join
 #   show requests.ytd by received_at.month             # year-to-date traffic
 #   show requests, requests.of(route) by route, status_class   # route subtotal per status
+#   show requests / requests.of(route) as share_of_route by route, status_class
 #   show latency_p99 by Services.criticality           # p99 by service tier

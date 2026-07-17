@@ -1,7 +1,7 @@
 import { ModelDecl, Program, QueryDecl } from "./ast/nodes.js";
 import { analyze, analyzeFunnel, analyzeRetention, AnalyzeOptions } from "./analyzer/analyzer.js";
 import { Catalog } from "./analyzer/catalog.js";
-import { route } from "./analyzer/routing.js";
+import { checkRollups, route } from "./analyzer/routing.js";
 import { FunnelPlan, Plan, RetentionPlan, SqlResult } from "./analyzer/ir.js";
 import { generate, generateFunnel, generateRetention } from "./codegen/codegen.js";
 import { SqlDialect } from "./codegen/dialect.js";
@@ -21,7 +21,7 @@ export { Catalog } from "./analyzer/catalog.js";
 export type { DimInfo, MaterializationInfo, MeasureInfo, MetricInfo, JoinInfo, ModelInfo, PolicyInfo } from "./analyzer/catalog.js";
 export { Analyzer, analyze, analyzeFunnel, analyzeRetention } from "./analyzer/analyzer.js";
 export type { AnalyzeOptions } from "./analyzer/analyzer.js";
-export { route } from "./analyzer/routing.js";
+export { checkRollups, route } from "./analyzer/routing.js";
 export type { RoutedPlan } from "./analyzer/routing.js";
 export * from "./analyzer/ir.js";
 export type { SqlDialect } from "./codegen/dialect.js";
@@ -42,7 +42,9 @@ export function buildCatalog(models: ModelDecl[]): Catalog {
 
 export function catalogFromSource(source: string): Catalog {
   const program = parseProgram(source);
-  return Catalog.build(program.models, program.policies, program.materializes);
+  const catalog = Catalog.build(program.models, program.policies, program.materializes);
+  checkRollups(catalog);
+  return catalog;
 }
 
 export interface Compiled extends SqlResult {
@@ -52,7 +54,6 @@ export interface Compiled extends SqlResult {
 
 export interface CompileOptions extends AnalyzeOptions {
   readonly dialect?: SqlDialect;
-  readonly route?: boolean;
 }
 
 export function compile(modelSource: string, querySource: string, options: CompileOptions = {}): Compiled {
@@ -76,7 +77,7 @@ export function compileWithCatalog(
   }
   const query = parseQuery(querySource);
   const plan = analyze(catalog, query, options);
-  const routed = options.route === false ? undefined : route(catalog, plan, query.span);
+  const routed = route(catalog, plan, query.span);
   const chosen = routed?.plan ?? plan;
   return { ...generate(catalog, chosen, dialect), plan: chosen, routedTo: routed?.materialization };
 }

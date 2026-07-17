@@ -1,5 +1,5 @@
 import { calendarGrain, CalendarGrain, TimeFrame, TimeGrain } from "../config/constants.js";
-import { BaseDialect, quoteZone } from "./dialect.js";
+import { BaseDialect, PeriodSeries, quoteZone } from "./dialect.js";
 
 export class BigQueryDialect extends BaseDialect {
   public readonly name = "bigquery";
@@ -29,10 +29,15 @@ export class BigQueryDialect extends BaseDialect {
     return frame?.tz === undefined ? "DATE" : "DATETIME";
   }
 
-  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {
+  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): PeriodSeries {
     const { count, unit } = this.step(grain);
     const interval = `INTERVAL ${count} ${unit.toUpperCase()}`;
-    return `UNNEST(GENERATE_DATE_ARRAY(${startExpr}, ${endExpr}, ${interval})) AS ${this.ident(columnAlias)}`;
+    return { from: `UNNEST(GENERATE_DATE_ARRAY(${startExpr}, ${endExpr}, ${interval})) AS ${this.ident(columnAlias)}` };
+  }
+
+  public asOfLateral(table: string, alias: string, keyPred: string, tsPred: string, order: string): string {
+    const inner = `SELECT AS STRUCT ${alias}.* FROM ${table} AS ${alias} WHERE ${keyPred} AND ${tsPred} ORDER BY ${order} LIMIT 1`;
+    return `LEFT JOIN UNNEST(ARRAY(${inner})) AS ${alias}`;
   }
 
   public periodDiff(grain: TimeGrain, later: string, earlier: string): string {

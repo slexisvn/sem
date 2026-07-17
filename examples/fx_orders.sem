@@ -39,7 +39,7 @@ model Rates {
   dimension rate_band: string
 }
 
-materialize revenue_by_region as
+rollup revenue_by_region as
   show revenue_local by region
 
 assert revenue_local where region = 'APAC' between 0 and 100000000

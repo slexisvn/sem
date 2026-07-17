@@ -1,5 +1,5 @@
 import { calendarGrain, CalendarGrain, TimeGrain } from "../config/constants.js";
-import { BaseDialect, lateralAsOf, quoteZone } from "./dialect.js";
+import { BaseDialect, lateralAsOf, PeriodSeries, quoteZone } from "./dialect.js";
 
 const MONTHS = (later: string, earlier: string): string =>
   `(EXTRACT(YEAR FROM ${later}) - EXTRACT(YEAR FROM ${earlier})) * 12 + (EXTRACT(MONTH FROM ${later}) - EXTRACT(MONTH FROM ${earlier}))`;
@@ -39,10 +39,10 @@ export class PostgresDialect extends BaseDialect {
     return `(${expr} ${op} INTERVAL '${Math.abs(months)} months')`;
   }
 
-  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): string {
+  public periodSeries(grain: TimeGrain, startExpr: string, endExpr: string, columnAlias: string): PeriodSeries {
     const { count, unit } = this.step(grain);
     const interval = `${count} ${unit}${count > 1 ? "s" : ""}`;
-    return `generate_series(${startExpr}, ${endExpr}, INTERVAL '${interval}') AS ${this.ident(columnAlias)}`;
+    return { from: `generate_series(${startExpr}, ${endExpr}, INTERVAL '${interval}') AS ${this.ident(columnAlias)}` };
   }
 
   public orderedQuantile(argSql: string, fraction: number): string {

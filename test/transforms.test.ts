@@ -1,13 +1,31 @@
 import { describe, expect, test } from "vitest";
-import { analyze, Catalog, DiagCode, generate, mysql, parseModels, parseQuery, SemError } from "../src/index.js";
+import { analyze, Catalog, compile, DiagCode, generate, mysql, parseModels, parseQuery, SemError } from "../src/index.js";
 import { MODELS, run } from "./fixtures.js";
+
+const CROSS_FACT = `
+model Orders {
+  table public.orders
+  primary_key id
+  dimension ordered_at: time = ordered_at
+  measure gross : money = sum(amount)
+  metric revenue = gross
+  metric roas = revenue / ad_spend
+}
+model AdSpend {
+  table public.ad_spend
+  primary_key id
+  dimension ordered_at: time = spent_at
+  measure cost_sum : money = sum(cost)
+  metric ad_spend = cost_sum
+}
+`;
 
 function mysqlSql(query: string): string {
   const cat = Catalog.build(parseModels(MODELS));
   return generate(cat, analyze(cat, parseQuery(query)), mysql).sql;
 }
 
-describe("phase 2 metric transforms → window functions", () => {
+describe("metric transforms become window functions", () => {
   test("mom growth uses LAG(x, 1) over the time grain", () => {
     const { sql } = run("show revenue, revenue.mom by ordered_at.month");
     expect(sql).toContain("WITH grid AS (");
@@ -62,13 +80,17 @@ describe("phase 2 metric transforms → window functions", () => {
     }
   });
 
-  test("transforms across two fact tables are refused", () => {
-    try {
-      run("show roas.mom by region");
-      throw new Error("expected failure");
-    } catch (err) {
-      expect((err as SemError).code).toBe(DiagCode.Unsupported);
-    }
+  test("a transform over a ratio of two fact tables windows the joined grid", () => {
+    const { sql } = compile(CROSS_FACT, "show roas.mom by ordered_at.month");
+    expect(sql).toContain("(orders_agg.m0 / NULLIF(adspend_agg.m0, 0)) AS roas");
+    expect(sql).toContain("FULL OUTER JOIN adspend_agg USING (ordered_at_month)");
+    expect(sql).toContain("(dense.roas / NULLIF(LAG(dense.roas, 1) OVER (ORDER BY ordered_at_month), 0) - 1) AS roas_mom");
+  });
+
+  test("a transform on one fact leaves the other fact's metric untouched beside it", () => {
+    const { sql } = compile(CROSS_FACT, "show revenue.mom, ad_spend by ordered_at.month");
+    expect(sql).toContain("LAG(dense.revenue, 1)");
+    expect(sql).toContain("dense.ad_spend AS ad_spend");
   });
 });
 
@@ -139,10 +161,18 @@ describe("date spine densifies the time axis for gap-correct windows", () => {
     expect(sql).not.toContain("spine AS (");
   });
 
-  test("dialects without a period series fall back to the positional grid", () => {
+  test("mysql builds its spine from a recursive cte, so a gap month still shifts the lag", () => {
     const sql = mysqlSql("show revenue.mom by ordered_at.month");
-    expect(sql).not.toContain("spine AS (");
-    expect(sql).toContain("LAG(grid.revenue, 1) OVER");
+    expect(sql).toContain("WITH RECURSIVE grid AS (");
+    expect(sql).toContain("SELECT (SELECT MIN(ordered_at_month) FROM grid) AS period");
+    expect(sql).toContain("UNION ALL");
+    expect(sql).toContain("SELECT DATE_ADD(period, INTERVAL 1 MONTH) FROM spine_seq WHERE DATE_ADD(period, INTERVAL 1 MONTH) <= (SELECT MAX(ordered_at_month) FROM grid)");
+    expect(sql).toContain("LAG(dense.revenue, 1) OVER");
+  });
+
+  test("the recursive keyword appears only when a dialect actually needs it", () => {
+    expect(run("show revenue.mom by ordered_at.month").sql).not.toContain("RECURSIVE");
+    expect(mysqlSql("show revenue.share by region")).not.toContain("RECURSIVE");
   });
 });
 
